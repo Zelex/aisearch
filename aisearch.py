@@ -240,7 +240,7 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
     return file_matches
 
 
-def search_code(directory, search_terms, extensions=None, case_sensitive=False, use_regex=False,
+def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                 color_output=True, context_lines=3, ignore_comments=True, max_workers=None, word_boundaries=False):
     if extensions:
         extensions = set(ext.lower() for ext in extensions)
@@ -309,7 +309,7 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False, 
                         file_ext, 
                         search_terms, 
                         case_sensitive, 
-                        use_regex, 
+                        True,  # Always use regex 
                         color_output, 
                         context_lines, 
                         ignore_comments, 
@@ -404,7 +404,6 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", help="Natural language prompt to generate search terms")
     parser.add_argument("-e", "--extensions", nargs='+', help="File extensions to include (e.g. .py .js)")
     parser.add_argument("-i", "--insensitive", action="store_true", help="Case-insensitive search")
-    parser.add_argument("-r", "--regex", action="store_true", help="Use regex patterns for search (Claude will generate regex patterns)")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--no-chat", action="store_true", help="Skip chat mode")
     parser.add_argument("--include-comments", action="store_true", help="Include comments in search results")
@@ -424,17 +423,13 @@ if __name__ == "__main__":
     print("Suggested terms:")
     for t in search_terms:
         print(f"- {t}")
-        
-    # Use regex mode based only on the command line flag
-    use_regex = args.regex
 
-    print("\nSearching code...")
+    print("\nSearching code using regex patterns...")
     matches = search_code(
         directory=args.directory,
         search_terms=search_terms,
         extensions=args.extensions,
         case_sensitive=not args.insensitive,
-        use_regex=use_regex,
         color_output=not args.no_color,
         context_lines=args.context,
         ignore_comments=not args.include_comments,
