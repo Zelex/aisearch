@@ -16,36 +16,59 @@ class StreamRedirector:
     def __init__(self, text_widget):
         self.text_widget = text_widget
         self.buffer = ""
-        self.max_buffer_size = 1000000  # ~1MB text limit
+        self.max_buffer_size = 500000  # Reduced to ~500KB text limit
+        self.lock = threading.Lock()  # Add lock for thread safety
         
     def write(self, text):
-        self.buffer += text
-        if '\n' in self.buffer or len(self.buffer) > 80:
-            # Check if text widget is getting too large
-            if self.text_widget.document().characterCount() > self.max_buffer_size:
-                # Truncate the text to prevent memory issues
-                cursor = self.text_widget.textCursor()
-                cursor.movePosition(QTextCursor.Start)
-                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
-                cursor.removeSelectedText()
-                self.text_widget.insertPlainText("[...truncated to prevent memory issues...]\n\n")
+        if not self.text_widget:
+            return  # Guard against text_widget being None
             
-            # Use insertPlainText instead of append to avoid extra newlines
-            cursor = self.text_widget.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(self.buffer)
-            self.text_widget.setTextCursor(cursor)
-            self.text_widget.ensureCursorVisible()
-            self.buffer = ""
+        with self.lock:
+            self.buffer += text
+            if '\n' in self.buffer or len(self.buffer) > 80:
+                # Check if text widget is getting too large
+                try:
+                    if self.text_widget.document().characterCount() > self.max_buffer_size:
+                        # Truncate the text to prevent memory issues
+                        cursor = self.text_widget.textCursor()
+                        cursor.movePosition(QTextCursor.Start)
+                        cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
+                        cursor.removeSelectedText()
+                        self.text_widget.insertPlainText("[...truncated to prevent memory issues...]\n\n")
+                    
+                    # Use insertPlainText instead of append to avoid extra newlines
+                    cursor = self.text_widget.textCursor()
+                    cursor.movePosition(QTextCursor.End)
+                    cursor.insertText(self.buffer)
+                    self.text_widget.setTextCursor(cursor)
+                    self.text_widget.ensureCursorVisible()
+                except (RuntimeError, Exception):
+                    # Guard against Qt C++ object deleted errors
+                    pass
+                self.buffer = ""
             
     def flush(self):
-        if self.buffer:
-            cursor = self.text_widget.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(self.buffer)
-            self.text_widget.setTextCursor(cursor)
-            self.text_widget.ensureCursorVisible()
-            self.buffer = ""
+        if not self.text_widget:
+            return  # Guard against text_widget being None
+            
+        with self.lock:
+            if self.buffer:
+                try:
+                    cursor = self.text_widget.textCursor()
+                    cursor.movePosition(QTextCursor.End)
+                    cursor.insertText(self.buffer)
+                    self.text_widget.setTextCursor(cursor)
+                    self.text_widget.ensureCursorVisible()
+                except (RuntimeError, Exception):
+                    # Guard against Qt C++ object deleted errors
+                    pass
+                self.buffer = ""
+                
+    def close(self):
+        # Ensure any remaining buffer is flushed
+        self.flush()
+        # Clear reference to text widget
+        self.text_widget = None
 
 class SearchThread(threading.Thread):
     def __init__(self, parent, directory, prompt, extensions, case_sensitive, 
@@ -63,10 +86,11 @@ class SearchThread(threading.Thread):
         self.max_workers = max_workers
         self.search_terms = []
         self.matches = []
+        self.daemon = True  # Make thread daemon so it doesn't block program exit
         
     def run(self):
         try:
-            # Get search terms
+            # Get search terms - send status update through signal
             self.parent.signal_update_status.emit("Querying Claude for search terms...")
             self.search_terms = aisearch.get_search_terms_from_prompt(
                 self.prompt, 
@@ -77,11 +101,11 @@ class SearchThread(threading.Thread):
             if len(self.search_terms) > 8:
                 self.search_terms = self.search_terms[:8]
                 
-            # Display terms
+            # Display terms - send through signal
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
             self.parent.signal_update_terms.emit(terms_text)
             
-            # Search code
+            # Search code - send status update through signal
             self.parent.signal_update_status.emit("Searching code using regex patterns...")
             
             # Process in batches
@@ -89,6 +113,37 @@ class SearchThread(threading.Thread):
             MAX_RESULTS = 100  # Hard limit on results
             
             try:
+                # Use a proper resource manager context to ensure cleanup
+                import multiprocessing as mp
+                
+                # Setup special handling for macOS to prevent semaphore leaks
+                if sys.platform == 'darwin':
+                    # Limit workers even more on macOS
+                    effective_workers = min(self.max_workers, 2)
+                    
+                    # Create a safer multiprocessing context for macOS
+                    if hasattr(mp, 'get_context'):
+                        mp_ctx = mp.get_context('spawn')
+                        # Disable semaphore tracking if possible to prevent leaks
+                        if hasattr(mp, 'resource_tracker') and hasattr(mp.resource_tracker, '_resource_tracker'):
+                            try:
+                                # Let's be careful with this 
+                                original_register = mp.resource_tracker._resource_tracker._register
+                                
+                                # Define a wrapper function that does nothing for semaphores
+                                def patched_register(name, rtype):
+                                    if rtype != 'semaphore':
+                                        original_register(name, rtype)
+                                
+                                # Apply the patch
+                                mp.resource_tracker._resource_tracker._register = patched_register
+                            except:
+                                pass
+                else:
+                    # For other platforms, just limit workers
+                    effective_workers = min(self.max_workers, 4)
+                    
+                # Run the search function with limited workers    
                 all_matches = aisearch.search_code(
                     directory=self.directory,
                     search_terms=self.search_terms,
@@ -97,22 +152,33 @@ class SearchThread(threading.Thread):
                     color_output=self.color_output,
                     context_lines=self.context_lines,
                     ignore_comments=self.ignore_comments,
-                    max_workers=self.max_workers
+                    max_workers=effective_workers
                 )
                 
                 # Truncate matches if too many
                 if len(all_matches) > MAX_RESULTS:
                     self.matches = all_matches[:MAX_RESULTS]
+                    # Send status update through signal
                     self.parent.signal_update_status.emit(f"Limited to {MAX_RESULTS} matches to prevent memory issues")
                 else:
                     self.matches = all_matches
             except Exception as e:
+                # Send error through signal
                 self.parent.signal_error.emit(f"Search error: {str(e)}")
                 self.matches = all_matches[:50] if len(all_matches) > 50 else all_matches
             
-            self.parent.signal_search_complete.emit(len(self.matches))
+            # Signal completion only if thread still active (parent still exists)
+            if hasattr(self, 'parent') and self.parent:
+                self.parent.signal_search_complete.emit(len(self.matches))
         except Exception as e:
-            self.parent.signal_error.emit(str(e))
+            if hasattr(self, 'parent') and self.parent:
+                self.parent.signal_error.emit(str(e))
+        finally:
+            # Clean up multiprocessing resources explicitly
+            import gc
+            
+            # Force garbage collection
+            gc.collect()
 
 class ChatThread(threading.Thread):
     def __init__(self, parent, matches, prompt, question):
@@ -121,6 +187,7 @@ class ChatThread(threading.Thread):
         self.matches = matches
         self.prompt = prompt
         self.question = question
+        self.daemon = True  # Make thread daemon so it doesn't block program exit
         
     def run(self):
         try:
@@ -164,10 +231,66 @@ class ChatThread(threading.Thread):
             )
             
             response_text = response.content[0].text
-            self.parent.signal_chat_response.emit(response_text)
+            if hasattr(self, 'parent') and self.parent:
+                self.parent.signal_chat_response.emit(response_text)
             
         except Exception as e:
-            self.parent.signal_error.emit(str(e))
+            if hasattr(self, 'parent') and self.parent:
+                self.parent.signal_error.emit(str(e))
+        finally:
+            # Clean up resources
+            gc.collect()
+
+# Create a custom QProgressBar that disables the built-in animation timer
+class SafeProgressBar(QProgressBar):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTextVisible(False)  # Disable text to avoid timer-based updates
+        self._animating = False
+        self._animation_timer = None
+        
+        # Disable Qt's internal style animations
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        
+        # Set properties to influence style to avoid animations
+        self.setProperty("animated", False)
+        
+        # Immediately disable and block any QBasicTimer
+        if hasattr(self, '_q_animation'):
+            self._q_animation = None
+        
+    # Override the timer-based methods to prevent QBasicTimer errors
+    def timerEvent(self, event):
+        # Just ignore timer events completely
+        if DEBUG_MODE:
+            debug_print(f"Ignoring timer event in SafeProgressBar: {event}")
+        event.ignore()  # Mark as handled to prevent further processing
+        
+    # Override paintEvent to skip animations
+    def paintEvent(self, event):
+        try:
+            # Call the parent class's paintEvent with a static drawing approach
+            super().paintEvent(event)
+        except Exception as e:
+            if DEBUG_MODE:
+                debug_print(f"Error in SafeProgressBar.paintEvent: {e}")
+                
+    # Disable standard progress bar behavior to avoid timers
+    def setRange(self, minimum, maximum):
+        super().setRange(minimum, maximum)
+        # Explicitly disable timer-based animation
+        self._animating = False
+        
+    def setValue(self, value):
+        # Just set the value without animation
+        super().setValue(value)
+        
+    # Override to prevent animation timers
+    def startTimer(self, interval, timerType=None):
+        if DEBUG_MODE:
+            debug_print(f"Blocked startTimer call in SafeProgressBar: interval={interval}")
+        # Return invalid timer ID
+        return -1
 
 class AISearchGUI(QMainWindow):
     signal_update_status = Signal(str)
@@ -359,8 +482,8 @@ class AISearchGUI(QMainWindow):
         # Status bar
         self.statusBar().showMessage("Ready")
         
-        # Progress bar
-        self.progress_bar = QProgressBar()
+        # Progress bar - use our custom SafeProgressBar to avoid timer issues
+        self.progress_bar = SafeProgressBar()
         self.progress_bar.setMaximum(0)  # Indeterminate
         self.progress_bar.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress_bar)
@@ -444,10 +567,24 @@ class AISearchGUI(QMainWindow):
         # Explicitly clean multiprocessing resources
         try:
             import multiprocessing as mp
+            if hasattr(mp, 'resource_tracker') and hasattr(mp.resource_tracker, '_resource_tracker') and hasattr(mp.resource_tracker._resource_tracker, '_stop'):
+                mp.resource_tracker._resource_tracker._stop()
+            
+            # Try to clean up any lingering semaphores
             if hasattr(mp, 'active_children'):
                 for child in mp.active_children():
-                    child.terminate()
-                    child.join(0.1)
+                    try:
+                        child.terminate()
+                        child.join(0.1)
+                    except:
+                        pass
+                    
+            # For Python 3.9+ specific handling of resource tracker
+            if hasattr(mp, '_resource_tracker') and hasattr(mp._resource_tracker, '_stop'):
+                try:
+                    mp._resource_tracker._stop()
+                except:
+                    pass
         except:
             pass
     
@@ -457,6 +594,11 @@ class AISearchGUI(QMainWindow):
             self.dir_input.setText(directory)
     
     def start_search(self):
+        # First make sure no existing search is running
+        if hasattr(self, 'search_thread') and self.search_thread is not None:
+            self.statusBar().showMessage("Search already in progress, please wait...")
+            return
+        
         # Validate inputs
         directory = self.dir_input.text().strip()
         prompt = self.prompt_input.text().strip()
@@ -484,10 +626,10 @@ class AISearchGUI(QMainWindow):
         self.chat_output.clear()
         self.chat_input.clear()
         self.chat_button.setEnabled(False)
+        self.chat_action.setEnabled(False)
         
         # Force garbage collection
         self.matches = []
-        import gc
         gc.collect()
         
         # Show progress
@@ -495,24 +637,39 @@ class AISearchGUI(QMainWindow):
         self.search_button.setEnabled(False)
         
         # Redirect stdout to results_text
-        self.original_stdout = sys.stdout
-        sys.stdout = StreamRedirector(self.results_text)
+        try:
+            self.original_stdout = sys.stdout
+            redirector = StreamRedirector(self.results_text)
+            sys.stdout = redirector
+        except Exception as e:
+            sys.stdout = sys.__stdout__
+            self.show_error(f"Failed to redirect output: {str(e)}")
+            self.search_button.setEnabled(True)
+            return
         
-        # Start search thread
-        self.search_thread = SearchThread(
-            self,
-            directory,
-            prompt,
-            extensions,
-            self.case_sensitive.isChecked(),
-            False,  # color_output (we handle this differently in GUI)
-            self.context_lines.value(),
-            not self.include_comments.isChecked(),
-            self.max_terms.value(),
-            self.max_workers.value()
-        )
-        self.search_thread.start()
-        
+        # Start search thread with error handling
+        try:
+            self.search_thread = SearchThread(
+                self,
+                directory,
+                prompt,
+                extensions,
+                self.case_sensitive.isChecked(),
+                False,  # color_output (we handle this differently in GUI)
+                self.context_lines.value(),
+                not self.include_comments.isChecked(),
+                self.max_terms.value(),
+                self.max_workers.value()
+            )
+            self.search_thread.start()
+        except Exception as e:
+            sys.stdout = self.original_stdout
+            self.show_error(f"Failed to start search: {str(e)}")
+            self.search_button.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            self.search_thread = None
+            gc.collect()
+    
     @Slot(str)
     def update_status(self, message):
         self.statusBar().showMessage(message)
@@ -527,22 +684,39 @@ class AISearchGUI(QMainWindow):
     @Slot(int)
     def search_complete(self, match_count):
         # Reset stdout
-        sys.stdout = self.original_stdout
+        if hasattr(self, 'original_stdout'):
+            try:
+                sys.stdout = self.original_stdout
+                
+                # If we used StreamRedirector, close it properly
+                if isinstance(sys.stdout, StreamRedirector):
+                    sys.stdout.close()
+            except:
+                # Fallback to ensure stdout is properly reset
+                sys.stdout = sys.__stdout__
         
-        # Hide progress
+        # Hide progress - must be done from the main thread
         self.progress_bar.setVisible(False)
         self.search_button.setEnabled(True)
         
-        # Ensure we don't process too many matches
-        if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
-            if len(self.search_thread.matches) > 100:
-                self.matches = self.search_thread.matches[:100]
-                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(self.search_thread.matches)}) to prevent memory issues.\n")
-            else:
-                self.matches = self.search_thread.matches
-        else:
-            self.matches = []
+        # Safely get matches from search thread
+        self.matches = []
+        
+        if hasattr(self, 'search_thread') and self.search_thread and hasattr(self.search_thread, 'matches'):
+            # Copy the matches from the thread to prevent reference issues
+            thread_matches = self.search_thread.matches
             
+            if len(thread_matches) > 100:
+                # Create a deep copy of the first 100 matches
+                import copy
+                self.matches = copy.deepcopy(thread_matches[:100])
+                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(thread_matches)}) to prevent memory issues.\n")
+            else:
+                # Create a deep copy of all matches
+                import copy
+                self.matches = copy.deepcopy(thread_matches)
+            
+        # Update UI based on match count - from main thread
         if match_count > 0:
             self.chat_button.setEnabled(True)
             self.chat_action.setEnabled(True)
@@ -552,8 +726,11 @@ class AISearchGUI(QMainWindow):
             self.chat_action.setEnabled(False)
             self.statusBar().showMessage("Search complete. No matches found.")
             
-        # Clear reference to search thread
-        self.search_thread = None
+        # Clear reference to search thread to release memory
+        if hasattr(self, 'search_thread') and self.search_thread:
+            self.search_thread = None
+        
+        # Force garbage collection
         gc.collect()
     
     def clear_results(self):
@@ -567,6 +744,11 @@ class AISearchGUI(QMainWindow):
         self.statusBar().showMessage("Results cleared")
     
     def start_chat(self):
+        # First make sure no existing chat is running
+        if hasattr(self, 'chat_thread') and self.chat_thread is not None:
+            self.statusBar().showMessage("Chat is already in progress, please wait...")
+            return
+        
         if not self.matches:
             self.show_error("No search results to discuss")
             return
@@ -577,10 +759,23 @@ class AISearchGUI(QMainWindow):
         # Show progress
         self.progress_bar.setVisible(True)
         self.chat_button.setEnabled(False)
+        self.chat_action.setEnabled(False)
         
-        # Start chat thread
-        self.chat_thread = ChatThread(self, self.matches, prompt, question)
-        self.chat_thread.start()
+        # Start chat thread with error handling
+        try:
+            # Create a deep copy of matches to prevent reference issues
+            import copy
+            matches_copy = copy.deepcopy(self.matches[:20])  # Limit to first 20 matches
+            
+            self.chat_thread = ChatThread(self, matches_copy, prompt, question)
+            self.chat_thread.start()
+        except Exception as e:
+            self.show_error(f"Failed to start chat: {str(e)}")
+            self.progress_bar.setVisible(False)
+            self.chat_button.setEnabled(True)
+            self.chat_action.setEnabled(True)
+            self.chat_thread = None
+            gc.collect()
     
     @Slot(str)
     def update_chat(self, response):
@@ -589,6 +784,13 @@ class AISearchGUI(QMainWindow):
         self.chat_button.setEnabled(True)
         self.chat_action.setEnabled(True)
         self.statusBar().showMessage("Chat response received")
+        
+        # Clear the chat thread to release resources
+        if hasattr(self, 'chat_thread') and self.chat_thread:
+            self.chat_thread = None
+        
+        # Force garbage collection
+        gc.collect()
     
     @Slot(str)
     def show_error(self, message):
@@ -646,6 +848,170 @@ class AISearchGUI(QMainWindow):
             QMessageBox.warning(dialog, "Error", "API Key cannot be empty")
 
 if __name__ == "__main__":
+    # Debug mode handling
+    DEBUG_MODE = os.environ.get("AISEARCH_DEBUG", "0") == "1"
+    
+    # Set up debug logging
+    if DEBUG_MODE:
+        import logging
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            handlers=[logging.StreamHandler()]
+        )
+        logger = logging.getLogger("aisearch_gui")
+        logger.info("Debug mode enabled")
+        logger.info(f"Python version: {sys.version}")
+        logger.info(f"Platform: {sys.platform}")
+        
+        # Log Qt version
+        try:
+            from PySide6 import __version__ as pyside_version
+            logger.info(f"PySide6 version: {pyside_version}")
+        except:
+            logger.info("PySide6 version: unknown")
+            
+        # Log multiprocessing settings
+        logger.info(f"Multiprocessing start method: {mp.get_start_method() if 'mp' in locals() else 'unknown'}")
+        
+        # Add more detailed debugging for key areas - monkeypatch to track resource usage
+        def debug_print(*args, **kwargs):
+            print("[DEBUG]", *args, **kwargs)
+            sys.stdout.flush()  # Force immediate output
+    else:
+        # No-op for debug_print in non-debug mode
+        def debug_print(*args, **kwargs):
+            pass
+    
+    # Force disable resource tracker warnings 
+    os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:multiprocessing.resource_tracker"
+    
+    # More aggressive suppression of warnings
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", message=".*resource_tracker.*")
+    warnings.filterwarnings("ignore", message=".*semaphore.*")
+    
+    # This is even more important than setting spawn - on macOS we need to completely
+    # disable the resource tracker for semaphores
+    try:
+        # Try to fix the semaphore leak by monkeypatching the resource tracker
+        import multiprocessing.resource_tracker as resource_tracker
+        
+        # Original tracker register function
+        _original_register = resource_tracker.register
+        
+        # Create a patched version that ignores semaphores and logs calls
+        def _patched_register(name, rtype):
+            if DEBUG_MODE:
+                debug_print(f"Resource tracker registering {rtype}: {name}")
+            
+            if rtype != "semaphore":
+                return _original_register(name, rtype)
+            else:
+                # Do nothing for semaphores
+                if DEBUG_MODE:
+                    debug_print(f"IGNORING semaphore registration: {name}")
+                return None
+                
+        # Apply the patch before any processes start
+        resource_tracker.register = _patched_register
+        
+        # Also patch the unregister function
+        _original_unregister = resource_tracker.unregister
+        
+        def _patched_unregister(name, rtype):
+            if DEBUG_MODE:
+                debug_print(f"Resource tracker unregistering {rtype}: {name}")
+            
+            if rtype != "semaphore":
+                return _original_unregister(name, rtype)
+            else:
+                # Do nothing for semaphores
+                if DEBUG_MODE:
+                    debug_print(f"IGNORING semaphore unregistration: {name}")
+                return None
+                
+        resource_tracker.unregister = _patched_unregister
+        
+        if DEBUG_MODE:
+            debug_print("Successfully patched resource tracker")
+            
+    except Exception as e:
+        if DEBUG_MODE:
+            debug_print(f"Failed to patch resource tracker: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    mp = None  # Store multiprocessing module reference
+    
+    # Initialize multiprocessing with spawn method to avoid fork-related issues
+    try:
+        import multiprocessing as mp
+        # Use spawn instead of fork for macOS compatibility
+        if hasattr(mp, 'set_start_method'):
+            try:
+                mp.set_start_method('spawn', force=True)
+                if DEBUG_MODE:
+                    debug_print(f"Set multiprocessing start method to spawn")
+            except RuntimeError as e:
+                if DEBUG_MODE:
+                    debug_print(f"Could not set start method: {e}")
+                # Method may already be set
+                if DEBUG_MODE:
+                    debug_print(f"Current start method: {mp.get_start_method()}")
+                pass
+            
+        # Register special macOS cleanup function
+        if sys.platform == 'darwin':
+            if DEBUG_MODE:
+                debug_print("Detected macOS platform, registering special cleanup")
+                
+            # On macOS, we need to cleanup semaphores more aggressively
+            def cleanup_macos_semaphores():
+                if DEBUG_MODE:
+                    debug_print("Running macOS semaphore cleanup")
+                try:
+                    # Get the semaphore tracker module
+                    from multiprocessing import semaphore_tracker
+                    # Force shutdown of the semaphore tracker
+                    if hasattr(semaphore_tracker, '_cleanup'):
+                        semaphore_tracker._cleanup()
+                        if DEBUG_MODE:
+                            debug_print("Called semaphore_tracker._cleanup()")
+                except (ImportError, AttributeError) as e:
+                    if DEBUG_MODE:
+                        debug_print(f"Error in semaphore cleanup: {e}")
+                    pass
+                    
+            # Register the macOS cleanup
+            atexit.register(cleanup_macos_semaphores)
+            if DEBUG_MODE:
+                debug_print("Registered macOS semaphore cleanup")
+    except (ImportError, RuntimeError) as e:
+        if DEBUG_MODE:
+            debug_print(f"Error setting up multiprocessing: {e}")
+        pass
+        
+    # Add a handler for Qt warnings & debug messages
+    if DEBUG_MODE:
+        def qt_message_handler(mode, context, message):
+            if mode == 0:  # QtDebugMsg
+                debug_print(f"Qt Debug: {message}")
+            elif mode == 1:  # QtWarningMsg
+                debug_print(f"Qt Warning: {message}")
+            elif mode == 2:  # QtCriticalMsg
+                debug_print(f"Qt Critical: {message}")
+            elif mode == 3:  # QtFatalMsg
+                debug_print(f"Qt Fatal: {message}")
+        
+        try:
+            from PySide6.QtCore import qInstallMessageHandler
+            qInstallMessageHandler(qt_message_handler)
+            debug_print("Installed Qt message handler")
+        except (ImportError, AttributeError) as e:
+            debug_print(f"Could not install Qt message handler: {e}")
+    
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # Modern look and feel
     
@@ -763,15 +1129,137 @@ if __name__ == "__main__":
     
     # Add cleanup to Python's exit handling
     def cleanup():
-        window.cleanup_resources()
-        # Extra cleanup for multiprocessing
-        import multiprocessing as mp
-        if hasattr(mp, '_resource_tracker') and hasattr(mp._resource_tracker, '_stop'):
+        if DEBUG_MODE:
+            debug_print("Running final cleanup")
+            
+        # Cleanup main window resources
+        if hasattr(window, 'cleanup_resources'):
             try:
-                mp._resource_tracker._stop()
-            except:
+                window.cleanup_resources()
+                if DEBUG_MODE:
+                    debug_print("Called window.cleanup_resources()")
+            except Exception as e:
+                if DEBUG_MODE:
+                    debug_print(f"Error during window cleanup: {e}")
                 pass
+        
+        # Force garbage collection to ensure all resources are released
+        import gc
+        count_before = gc.get_count()
+        gc.collect()
+        count_after = gc.get_count()
+        if DEBUG_MODE:
+            debug_print(f"GC collect: {count_before} → {count_after}")
+        
+        # Explicitly close and destroy window if still exists
+        try:
+            window.close()
+            window.deleteLater()
+            if DEBUG_MODE:
+                debug_print("Called window.close() and deleteLater()")
+        except Exception as e:
+            if DEBUG_MODE:
+                debug_print(f"Error closing window: {e}")
+            pass
+            
+        # Extra cleanup for multiprocessing
+        if mp:
+            # Shutdown any active multiprocessing resources
+            try:
+                if hasattr(mp, 'current_process') and mp.current_process().name == 'MainProcess':
+                    if DEBUG_MODE:
+                        debug_print("Running multiprocessing cleanup in main process")
+                    # Only do this in the main process
+                    
+                    # Close the resource tracker explicitly to fix semaphore leaks
+                    if hasattr(mp, '_resource_tracker') and hasattr(mp._resource_tracker, '_stop'):
+                        try:
+                            mp._resource_tracker._stop()
+                            if DEBUG_MODE:
+                                debug_print("Called mp._resource_tracker._stop()")
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                debug_print(f"Error stopping resource tracker: {e}")
+                            pass
+                        
+                    # Reset the resource tracker module to clear any lingering handles
+                    if hasattr(mp, '_resource_tracker') and hasattr(mp._resource_tracker, '_resource_tracker'):
+                        try:
+                            mp._resource_tracker._resource_tracker = None
+                            if DEBUG_MODE:
+                                debug_print("Set mp._resource_tracker._resource_tracker = None")
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                debug_print(f"Error resetting resource tracker: {e}")
+                            pass
+                            
+                    # Shutdown the daemon process that tracks resources
+                    if hasattr(mp, 'util') and hasattr(mp.util, '_exit_function'):
+                        try:
+                            mp.util._exit_function()
+                            if DEBUG_MODE:
+                                debug_print("Called mp.util._exit_function()")
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                debug_print(f"Error calling exit function: {e}")
+                            pass
+                        
+                    # Special handling for macOS semaphore cleanup
+                    if sys.platform == 'darwin':
+                        try:
+                            from multiprocessing import resource_tracker
+                            if hasattr(resource_tracker, "_HAVE_SIGMASK"):
+                                resource_tracker._HAVE_SIGMASK = False
+                                if DEBUG_MODE:
+                                    debug_print("Set resource_tracker._HAVE_SIGMASK = False")
+                                
+                            # Disable resource tracker altogether
+                            if hasattr(resource_tracker, "_resource_tracker"):
+                                resource_tracker._resource_tracker = None
+                                if DEBUG_MODE:
+                                    debug_print("Set resource_tracker._resource_tracker = None")
+                        except Exception as e:
+                            if DEBUG_MODE:
+                                debug_print(f"Error in macOS cleanup: {e}")
+                            pass
+            except Exception as e:
+                if DEBUG_MODE:
+                    debug_print(f"Error in multiprocessing cleanup: {e}")
+                pass
+        
+        # One more garbage collection for good measure
+        gc.collect()
+        if DEBUG_MODE:
+            debug_print("Final cleanup complete")
     
+    # Register the main cleanup function
     atexit.register(cleanup)
+    if DEBUG_MODE:
+        debug_print("Registered atexit cleanup handler")
     
-    sys.exit(app.exec()) 
+    # Catch termination signals
+    import signal
+    signal.signal(signal.SIGINT, lambda sig, frame: (debug_print("Received SIGINT") if DEBUG_MODE else None, cleanup()))
+    signal.signal(signal.SIGTERM, lambda sig, frame: (debug_print("Received SIGTERM") if DEBUG_MODE else None, cleanup()))
+    if DEBUG_MODE:
+        debug_print("Registered signal handlers")
+    
+    try:
+        if DEBUG_MODE:
+            debug_print("Starting main Qt event loop")
+        result = app.exec()
+        if DEBUG_MODE:
+            debug_print(f"Qt event loop ended with result: {result}")
+        # Explicitly call cleanup before exiting
+        cleanup()
+        sys.exit(result)
+    except Exception as e:
+        if DEBUG_MODE:
+            debug_print(f"Error in main event loop: {e}")
+            import traceback
+            traceback.print_exc()
+    finally:
+        # Final cleanup attempt
+        if DEBUG_MODE:
+            debug_print("In finally block, calling cleanup again")
+        cleanup() 

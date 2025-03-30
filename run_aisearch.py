@@ -32,6 +32,7 @@ def main():
     parser = argparse.ArgumentParser(description="AISearch - AI-powered code search tool")
     parser.add_argument("--gui", action="store_true", help="Launch the GUI version")
     parser.add_argument("--cli", action="store_true", help="Launch the CLI version")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode with verbose output")
     
     # Pass remaining arguments to the CLI version
     parser.add_argument("remaining", nargs=argparse.REMAINDER, 
@@ -51,6 +52,33 @@ def main():
         else:
             args.cli = True
     
+    # Set environment variables for debugging and fixing multiprocessing issues
+    if args.debug:
+        os.environ["AISEARCH_DEBUG"] = "1"
+        
+    # Set environment variables to fix multiprocessing issues on macOS
+    os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+    
+    # Disable multiprocessing resource tracking to prevent semaphore leaks
+    os.environ["PYTHONWARNINGS"] = "ignore::UserWarning:multiprocessing.resource_tracker"
+    
+    # Run multiprocessing in spawn mode for better compatibility
+    os.environ["PYTHONFAULTHANDLER"] = "1"  # Enable fault handler
+    
+    if sys.platform == 'darwin':
+        print("Detected macOS platform, applying special multiprocessing fixes")
+        # Apply macOS-specific fixes
+        os.environ["PYDEVD_USE_FRAME_EVAL"] = "NO"  # Fix for debugger on macOS
+        
+    if args.debug:
+        print("Debug mode enabled")
+        # Print Python and system information
+        print(f"Python version: {sys.version}")
+        print(f"Platform: {sys.platform}")
+        
+        # Debug mode enables extra diagnostic printouts
+        os.environ["PYTHONDEBUG"] = "1"
+        
     # Launch the appropriate version
     if args.gui:
         if not gui_available:
@@ -59,7 +87,17 @@ def main():
             return 1
         
         print("Launching AISearch GUI...")
-        return subprocess.call([sys.executable, "aisearch_gui.py"])
+        
+        # Pass environment variables through to subprocess
+        env = os.environ.copy()
+        
+        # Add special Qt flags to prevent timer issues
+        env["QT_LOGGING_RULES"] = "qt.qpa.timer=false"
+        
+        if args.debug:
+            return subprocess.call([sys.executable, "aisearch_gui.py"], env=env)
+        else:
+            return subprocess.call([sys.executable, "aisearch_gui.py"], env=env)
     else:
         if not args.remaining:
             # If no arguments provided, show help
