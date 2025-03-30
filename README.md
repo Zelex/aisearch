@@ -54,11 +54,6 @@ Look for memory leaks in C++ code with extended context:
 python aisearch.py ./src --prompt "memory allocation without proper cleanup" --extensions .cpp .h --context 10
 ```
 
-Search with word boundaries to find exact variable names:
-```
-python aisearch.py ./src --prompt "config variables" --word-boundaries
-```
-
 ### Command Line Arguments
 
 | Argument | Description |
@@ -73,7 +68,6 @@ python aisearch.py ./src --prompt "config variables" --word-boundaries
 | `--terms` | Number of search terms to generate (default: 10) |
 | `--context` | Lines of context before/after match (default: 6) |
 | `--workers` | Number of parallel workers (default: 2x CPU cores) |
-| `--word-boundaries` | Match whole words only |
 
 ## Workflow
 
@@ -87,5 +81,4 @@ python aisearch.py ./src --prompt "config variables" --word-boundaries
 
 - Be specific in your prompts for better search patterns
 - Add file extensions to focus on specific languages
-- Increase context lines when you need more surrounding code
-- Use word boundaries to avoid partial matches 
+- Increase context lines when you need more surrounding code 

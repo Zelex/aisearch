@@ -112,7 +112,7 @@ def sanitize_regex_pattern(pattern):
     return pattern
 
 
-def highlight_match(line, term, pattern, color_output, case_sensitive, use_regex, word_boundaries=False):
+def highlight_match(line, term, pattern, color_output, case_sensitive, use_regex):
     if not color_output:
         return line
 
@@ -126,10 +126,7 @@ def highlight_match(line, term, pattern, color_output, case_sensitive, use_regex
         return pattern.sub(replace, line)
     else:
         flags = 0 if case_sensitive else re.IGNORECASE
-        if word_boundaries:
-            return re.sub(f'(\\b{re.escape(term)}\\b)', f'{color_start}\\1{color_end}', line, flags=flags)
-        else:
-            return re.sub(f'({re.escape(term)})', f'{color_start}\\1{color_end}', line, flags=flags)
+        return re.sub(f'({re.escape(term)})', f'{color_start}\\1{color_end}', line, flags=flags)
 
 
 def is_comment(line, file_ext):
@@ -165,7 +162,7 @@ def is_comment(line, file_ext):
     return False
 
 
-def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_output, context_lines, ignore_comments, sanitized_patterns, word_boundaries=False):
+def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_output, context_lines, ignore_comments, sanitized_patterns):
     """Search a single file for all terms and return matches."""
     file_matches = []
     
@@ -178,9 +175,6 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
             
             if use_regex:
                 try:
-                    # Add word boundaries if requested and not already in pattern
-                    if word_boundaries and not (term.startswith(r'\b') and term.endswith(r'\b')):
-                        term = r'\b' + term + r'\b'
                     pattern = re.compile(term, flags)
                 except re.error:
                     # If pattern is already sanitized, use it
@@ -191,8 +185,6 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
                         sanitized_patterns[term] = sanitized_term
                     
                     try:
-                        if word_boundaries and not (sanitized_term.startswith(r'\b') and sanitized_term.endswith(r'\b')):
-                            sanitized_term = r'\b' + sanitized_term + r'\b'
                         pattern = re.compile(sanitized_term, flags)
                     except re.error:
                         continue
@@ -209,13 +201,8 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
                 if use_regex:
                     match = pattern.search(line_to_check)
                 else:
-                    if word_boundaries:
-                        # For non-regex searches with word boundaries, use regex with \b
-                        word_pattern = re.compile(r'\b' + re.escape(term) + r'\b', flags)
-                        match = word_pattern.search(line_to_check)
-                    else:
-                        # Regular string containment
-                        match = (term in line_to_check if case_sensitive else term.lower() in line_to_check.lower())
+                    # Regular string containment
+                    match = (term in line_to_check if case_sensitive else term.lower() in line_to_check.lower())
                 
                 if match:
                     start = max(0, i - context_lines)
@@ -223,7 +210,7 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
                     context = "".join(lines[start:end])
                     
                     highlighted = highlight_match(line_to_check, term, pattern if use_regex else None, 
-                                                color_output, case_sensitive, use_regex, word_boundaries)
+                                                color_output, case_sensitive, use_regex)
                     
                     file_matches.append({
                         "file": path,
@@ -241,7 +228,7 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
 
 
 def search_code(directory, search_terms, extensions=None, case_sensitive=False,
-                color_output=True, context_lines=3, ignore_comments=True, max_workers=None, word_boundaries=False):
+                color_output=True, context_lines=3, ignore_comments=True, max_workers=None):
     if extensions:
         extensions = set(ext.lower() for ext in extensions)
 
@@ -313,8 +300,7 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                         color_output, 
                         context_lines, 
                         ignore_comments, 
-                        sanitized_patterns,
-                        word_boundaries
+                        sanitized_patterns
                     )
                     futures[future] = path
                     
@@ -410,7 +396,6 @@ if __name__ == "__main__":
     parser.add_argument("--terms", type=int, default=10, help="Number of search terms to generate (default: 10)")
     parser.add_argument("--context", type=int, default=6, help="Lines of context before/after match")
     parser.add_argument("--workers", type=int, help="Number of parallel workers for search (default: 2x CPU cores)")
-    parser.add_argument("--word-boundaries", action="store_true", help="Match whole words only (using word boundaries)")
 
     args = parser.parse_args()
 
@@ -433,8 +418,7 @@ if __name__ == "__main__":
         color_output=not args.no_color,
         context_lines=args.context,
         ignore_comments=not args.include_comments,
-        max_workers=args.workers,
-        word_boundaries=args.word_boundaries
+        max_workers=args.workers
     )
 
     if matches and not args.no_chat:
