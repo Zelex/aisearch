@@ -3,49 +3,46 @@ import os
 import threading
 import atexit
 import gc
+import time
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
                              QListWidget, QProgressBar, QMessageBox, QDialog)
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer
 from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat
 
 import aisearch
 
+class ResultsBuffer:
+    def __init__(self):
+        self.buffer = []
+        self.lock = threading.Lock()
+    
+    def add(self, text):
+        with self.lock:
+            self.buffer.append(text)
+    
+    def get_and_clear(self):
+        with self.lock:
+            result = "".join(self.buffer)
+            self.buffer = []
+            return result
+
 class StreamRedirector:
-    def __init__(self, text_widget):
-        self.text_widget = text_widget
-        self.buffer = ""
-        self.max_buffer_size = 1000000  # ~1MB text limit
+    def __init__(self, results_buffer):
+        self.results_buffer = results_buffer
+        self.line_buffer = ""
         
     def write(self, text):
-        self.buffer += text
-        if '\n' in self.buffer or len(self.buffer) > 80:
-            # Check if text widget is getting too large
-            if self.text_widget.document().characterCount() > self.max_buffer_size:
-                # Truncate the text to prevent memory issues
-                cursor = self.text_widget.textCursor()
-                cursor.movePosition(QTextCursor.Start)
-                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
-                cursor.removeSelectedText()
-                self.text_widget.insertPlainText("[...truncated to prevent memory issues...]\n\n")
-            
-            # Use insertPlainText instead of append to avoid extra newlines
-            cursor = self.text_widget.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(self.buffer)
-            self.text_widget.setTextCursor(cursor)
-            self.text_widget.ensureCursorVisible()
-            self.buffer = ""
+        self.line_buffer += text
+        if '\n' in self.line_buffer or len(self.line_buffer) > 80:
+            self.results_buffer.add(self.line_buffer)
+            self.line_buffer = ""
             
     def flush(self):
-        if self.buffer:
-            cursor = self.text_widget.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(self.buffer)
-            self.text_widget.setTextCursor(cursor)
-            self.text_widget.ensureCursorVisible()
-            self.buffer = ""
+        if self.line_buffer:
+            self.results_buffer.add(self.line_buffer)
+            self.line_buffer = ""
 
 class SearchThread(threading.Thread):
     def __init__(self, parent, directory, prompt, extensions, case_sensitive, 
@@ -63,6 +60,7 @@ class SearchThread(threading.Thread):
         self.max_workers = max_workers
         self.search_terms = []
         self.matches = []
+        self.running = True
         
     def run(self):
         try:
@@ -113,6 +111,8 @@ class SearchThread(threading.Thread):
             self.parent.signal_search_complete.emit(len(self.matches))
         except Exception as e:
             self.parent.signal_error.emit(str(e))
+        finally:
+            self.running = False
 
 class ChatThread(threading.Thread):
     def __init__(self, parent, matches, prompt, question):
@@ -182,6 +182,9 @@ class AISearchGUI(QMainWindow):
         self.search_thread = None
         self.chat_thread = None
         self.settings = QSettings("AICodeSearch", "AISearchGUI")
+        self.results_buffer = ResultsBuffer()
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.process_results_buffer)
         self.setupUI()
         self.loadSettings()
         
@@ -430,6 +433,10 @@ class AISearchGUI(QMainWindow):
     
     def cleanup_resources(self):
         """Clean up resources to prevent leaks"""
+        # Stop the update timer
+        if hasattr(self, 'update_timer') and self.update_timer.isActive():
+            self.update_timer.stop()
+        
         # Stop any running threads
         if hasattr(self, 'search_thread') and self.search_thread is not None:
             # The thread might be accessing multiprocessing resources
@@ -485,6 +492,9 @@ class AISearchGUI(QMainWindow):
         self.chat_input.clear()
         self.chat_button.setEnabled(False)
         
+        # Reset the results buffer
+        self.results_buffer = ResultsBuffer()
+        
         # Force garbage collection
         self.matches = []
         import gc
@@ -494,9 +504,9 @@ class AISearchGUI(QMainWindow):
         self.progress_bar.setVisible(True)
         self.search_button.setEnabled(False)
         
-        # Redirect stdout to results_text
+        # Redirect stdout to results buffer
         self.original_stdout = sys.stdout
-        sys.stdout = StreamRedirector(self.results_text)
+        sys.stdout = StreamRedirector(self.results_buffer)
         
         # Start search thread
         self.search_thread = SearchThread(
@@ -513,21 +523,73 @@ class AISearchGUI(QMainWindow):
         )
         self.search_thread.start()
         
+        # Start the update timer to periodically process the buffer
+        self.update_timer.start(250)  # Update UI every 250ms
+        
+    def process_results_buffer(self):
+        """Process accumulated results from the buffer and update UI"""
+        if not hasattr(self, 'search_thread') or self.search_thread is None:
+            self.update_timer.stop()
+            return
+            
+        # Get buffered content
+        buffered_text = self.results_buffer.get_and_clear()
+        if buffered_text:
+            # Check if text widget is getting too large
+            if self.results_text.document().characterCount() > 1000000:  # ~1MB text limit
+                # Truncate the text to prevent memory issues
+                cursor = self.results_text.textCursor()
+                cursor.movePosition(QTextCursor.Start)
+                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
+                cursor.removeSelectedText()
+                self.results_text.insertPlainText("[...truncated to prevent memory issues...]\n\n")
+            
+            # Append new text
+            cursor = self.results_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(buffered_text)
+            self.results_text.setTextCursor(cursor)
+            self.results_text.ensureCursorVisible()
+        
+        # Check if search is still running
+        if hasattr(self, 'search_thread') and self.search_thread and not self.search_thread.running:
+            # Final update to make sure we catch everything
+            buffered_text = self.results_buffer.get_and_clear()
+            if buffered_text:
+                cursor = self.results_text.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                cursor.insertText(buffered_text)
+                self.results_text.setTextCursor(cursor)
+                self.results_text.ensureCursorVisible()
+            
+            # Stop the timer
+            self.update_timer.stop()
+        
     @Slot(str)
     def update_status(self, message):
         self.statusBar().showMessage(message)
         
     @Slot(str)
     def update_terms(self, terms_text):
-        # Clear first if getting large to prevent memory issues
-        if self.results_text.document().characterCount() > 500000:
-            self.results_text.clear()
-        self.results_text.insertPlainText(terms_text + "\n\n")
+        # Add to buffer instead of directly to UI
+        self.results_buffer.add(terms_text + "\n\n")
     
     @Slot(int)
     def search_complete(self, match_count):
         # Reset stdout
         sys.stdout = self.original_stdout
+        
+        # Process any remaining buffered output
+        buffered_text = self.results_buffer.get_and_clear()
+        if buffered_text:
+            cursor = self.results_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(buffered_text)
+            self.results_text.setTextCursor(cursor)
+            self.results_text.ensureCursorVisible()
+        
+        # Stop the update timer
+        self.update_timer.stop()
         
         # Hide progress
         self.progress_bar.setVisible(False)
