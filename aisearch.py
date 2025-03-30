@@ -228,7 +228,16 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
 
 
 def search_code(directory, search_terms, extensions=None, case_sensitive=False,
-                color_output=True, context_lines=3, ignore_comments=True, max_workers=None):
+                color_output=True, context_lines=3, ignore_comments=True, max_workers=None, stop_requested=None):
+    """
+    Search code in directory for specified terms.
+    
+    Parameters:
+    -----------
+    stop_requested : callable, optional
+        A callable that returns True if the search should be stopped.
+        This allows external code to interrupt the search process.
+    """
     if extensions:
         extensions = set(ext.lower() for ext in extensions)
 
@@ -255,6 +264,14 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
         def process_completed_futures(block=False):
             nonlocal processed_files
             
+            # Check if search should be stopped
+            if stop_requested and stop_requested():
+                # Cancel all pending futures
+                for future in futures:
+                    future.cancel()
+                futures.clear()
+                return True
+            
             # Use as_completed with timeout=0 for non-blocking or None for blocking
             timeout = None if block else 0
             
@@ -277,11 +294,21 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
             except concurrent.futures.TimeoutError:
                 # No futures completed within the timeout
                 pass
+            
+            return False
         
         try:
             # Walk the directory tree and submit tasks as we find files
             for root, _, files in os.walk(directory):
+                # Check if search should be stopped
+                if stop_requested and stop_requested():
+                    break
+                
                 for file in files:
+                    # Check if search should be stopped
+                    if stop_requested and stop_requested():
+                        break
+                        
                     file_ext = os.path.splitext(file)[1].lower()
                     if extensions and not any(file.lower().endswith(ext) for ext in extensions):
                         continue
@@ -305,14 +332,16 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                     futures[future] = path
                     
                     # Periodically process completed futures while we continue searching
-                    process_completed_futures(block=False)
+                    if process_completed_futures(block=False):
+                        break  # Stop requested
                     
                     # Update total in progress bar
                     pbar.total = total_files
                     pbar.refresh()
             
-            # Process all remaining futures
-            process_completed_futures(block=True)
+            # Process all remaining futures if not stopped
+            if not (stop_requested and stop_requested()):
+                process_completed_futures(block=True)
             
         finally:
             pbar.close()
@@ -321,7 +350,10 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     for term, sanitized_term in sanitized_patterns.items():
         print(f"Warning: Fixed problematic regex pattern: '{term}' → '{sanitized_term}'")
     
-    print(f"\nProcessed {processed_files} files, found {len(all_matches)} matches")
+    if stop_requested and stop_requested():
+        print(f"\nSearch stopped. Processed {processed_files} files, found {len(all_matches)} matches")
+    else:
+        print(f"\nProcessed {processed_files} files, found {len(all_matches)} matches")
     return all_matches
 
 

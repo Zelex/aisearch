@@ -64,10 +64,15 @@ class SearchThread(threading.Thread):
         self.search_terms = []
         self.matches = []
         self.running = True
+        self.stop_requested = False
         
     def run(self):
         try:
             # Get search terms
+            if self.stop_requested:
+                self.running = False
+                return
+                
             self.parent.signal_update_status.emit("Querying Claude for search terms...")
             self.search_terms = aisearch.get_search_terms_from_prompt(
                 self.prompt, 
@@ -82,6 +87,10 @@ class SearchThread(threading.Thread):
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
             self.parent.signal_update_terms.emit(terms_text)
             
+            if self.stop_requested:
+                self.running = False
+                return
+                
             # Search code
             self.parent.signal_update_status.emit("Searching code using regex patterns...")
             
@@ -98,7 +107,8 @@ class SearchThread(threading.Thread):
                     color_output=self.color_output,
                     context_lines=self.context_lines,
                     ignore_comments=self.ignore_comments,
-                    max_workers=self.max_workers
+                    max_workers=self.max_workers,
+                    stop_requested=lambda: self.stop_requested  # Pass a callable to check if stop was requested
                 )
                 
                 # Truncate matches if too many
@@ -116,6 +126,9 @@ class SearchThread(threading.Thread):
             self.parent.signal_error.emit(str(e))
         finally:
             self.running = False
+    
+    def stop(self):
+        self.stop_requested = True
 
 class ChatThread(threading.Thread):
     def __init__(self, parent, matches, prompt, question):
@@ -273,6 +286,12 @@ class AISearchGUI(QMainWindow):
         search_action = self.toolbar.addAction("Search")
         search_action.triggered.connect(self.start_search)
         search_action.setToolTip("Start a new search")
+        
+        # Add stop search action
+        self.stop_action = self.toolbar.addAction("Stop")
+        self.stop_action.triggered.connect(self.stop_search)
+        self.stop_action.setToolTip("Stop the current search")
+        self.stop_action.setEnabled(False)
         
         self.toolbar.addSeparator()
         
@@ -577,6 +596,7 @@ class AISearchGUI(QMainWindow):
         # Show progress
         self.progress_bar.setVisible(True)
         self.search_button.setEnabled(False)
+        self.stop_action.setEnabled(True)
         
         # Redirect stdout to results buffer
         self.original_stdout = sys.stdout
@@ -668,6 +688,7 @@ class AISearchGUI(QMainWindow):
         # Hide progress
         self.progress_bar.setVisible(False)
         self.search_button.setEnabled(True)
+        self.stop_action.setEnabled(False)
         
         # Ensure we don't process too many matches
         if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
@@ -836,6 +857,21 @@ class AISearchGUI(QMainWindow):
                 
         except Exception as e:
             self.show_error(f"Error opening file: {str(e)}")
+
+    def stop_search(self):
+        """Stop the currently running search"""
+        if self.search_thread and self.search_thread.is_alive():
+            # Request the search thread to stop
+            self.search_thread.stop()
+            
+            # Update UI
+            self.results_buffer.add("\n\n[Search stopped by user]\n")
+            self.stop_action.setEnabled(False)
+            self.search_button.setEnabled(True)
+            self.statusBar().showMessage("Search stopped")
+            
+            # No need to reset stdout here as that will be done in search_complete
+            # when the thread finishes
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
