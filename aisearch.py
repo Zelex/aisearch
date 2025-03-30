@@ -162,6 +162,71 @@ def is_comment(line, file_ext):
     return False
 
 
+def fast_walk(directory, skip_dirs=None):
+    """Faster alternative to os.walk using scandir with Windows-specific optimizations"""
+    if skip_dirs is None:
+        skip_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'build', 'dist'}
+    
+    # Enable long path support on Windows
+    if sys.platform == 'win32' and not directory.startswith('\\\\?\\'):
+        # Convert to absolute path with \\?\ prefix to support long paths
+        directory = os.path.abspath(directory)
+        if not directory.startswith('\\\\'):  # Not a UNC path
+            directory = '\\\\?\\' + directory
+    
+    # Use a stack instead of a queue for better memory locality
+    dirs = [directory]
+    while dirs:
+        current = dirs.pop()  # Depth-first is more memory efficient
+        try:
+            # Get subdirectories and files in one pass
+            subdirs = []
+            files = []
+            
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        name = entry.name
+                        # Skip hidden files and directories on Windows
+                        if sys.platform == 'win32' and name.startswith('.'):
+                            continue
+                            
+                        # Quick name check before expensive is_dir call
+                        if name in skip_dirs:
+                            continue
+                            
+                        # Use stat attributes directly when possible on Windows
+                        if hasattr(entry, 'is_dir') and hasattr(entry, 'is_file'):
+                            if entry.is_dir(follow_symlinks=False):
+                                # Store full paths directly
+                                subdirs.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                files.append(name)
+                        else:
+                            # Fallback for systems without DirEntry attributes
+                            if os.path.isdir(entry.path):
+                                subdirs.append(entry.path)
+                            elif os.path.isfile(entry.path):
+                                files.append(name)
+                    except (PermissionError, OSError, FileNotFoundError):
+                        # Skip entries we can't access
+                        continue
+            
+            # Yield the current directory, subdirectory basenames, and files
+            yield current, [os.path.basename(d) for d in subdirs], files
+            
+            # Add subdirs to the stack in reverse order to maintain expected traversal order
+            dirs.extend(reversed(subdirs))
+        except PermissionError:
+            continue
+        except OSError:
+            # Handle Windows-specific path errors
+            continue
+        except Exception as e:
+            # Skip any directories we can't access
+            continue
+
+
 def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_output, context_lines, ignore_comments, sanitized_patterns):
     """Search a single file for all terms and return matches."""
     file_matches = []
@@ -239,7 +304,10 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
         This allows external code to interrupt the search process.
     """
     if extensions:
+        # Convert extensions to a set of lowercase strings for O(1) lookup
         extensions = set(ext.lower() for ext in extensions)
+        # Pre-process extensions to ensure they start with a dot
+        extensions = {ext if ext.startswith('.') else f'.{ext}' for ext in extensions}
 
     # Track which patterns have already been sanitized to avoid duplicate warnings
     sanitized_patterns = {}
@@ -247,10 +315,17 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     total_files = 0
     processed_files = 0
 
+    # Skip common non-source directories
+    skip_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'build', 'dist', 'obj', 'bin'}
+
     # If no custom max_workers specified, determine an appropriate value
     if max_workers is None:
         max_workers = os.cpu_count() * 2
         max_workers = max(1, max_workers)  # Ensure at least 1 worker
+    
+    # Windows-specific: Reduce thread count for better performance on Windows
+    if sys.platform == 'win32' and max_workers > 8:
+        max_workers = 8  # Windows handles fewer threads more efficiently
     
     # Create a ThreadPoolExecutor to search files in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -297,21 +372,40 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
             
             return False
         
+        # Batch files by directory for more efficient processing
+        current_batch = []
+        current_dir = None
+        batch_size = 100  # Adjust based on testing
+        
         try:
-            # Walk the directory tree and submit tasks as we find files
-            for root, _, files in os.walk(directory):
+            # Walk the directory tree using fast_walk and submit tasks as we find files
+            for root, dirs, files in fast_walk(directory, skip_dirs):
                 # Check if search should be stopped
                 if stop_requested and stop_requested():
                     break
+                
+                # Process files in batches by directory to improve locality
+                file_batch = []
                 
                 for file in files:
                     # Check if search should be stopped
                     if stop_requested and stop_requested():
                         break
                         
-                    file_ext = os.path.splitext(file)[1].lower()
-                    if extensions and not any(file.lower().endswith(ext) for ext in extensions):
+                    # Get extension - more efficient than splitext for extension checking
+                    file_lower = file.lower()
+                    dot_index = file_lower.rfind('.')
+                    
+                    if dot_index != -1:
+                        file_ext = file_lower[dot_index:]
+                        # If extensions specified, filter by extension
+                        if extensions and file_ext not in extensions:
+                            continue
+                    elif extensions:
+                        # Skip files without extensions if extensions specified
                         continue
+                    else:
+                        file_ext = ''
                     
                     path = os.path.join(root, file)
                     total_files += 1
@@ -332,12 +426,18 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                     futures[future] = path
                     
                     # Periodically process completed futures while we continue searching
-                    if process_completed_futures(block=False):
-                        break  # Stop requested
+                    # Process more frequently on Windows to avoid memory buildup
+                    if len(futures) > batch_size or (sys.platform == 'win32' and len(futures) > 50):
+                        if process_completed_futures(block=False):
+                            break  # Stop requested
                     
                     # Update total in progress bar
                     pbar.total = total_files
                     pbar.refresh()
+                
+                # Process completed futures after each directory to maintain responsiveness
+                if process_completed_futures(block=False):
+                    break  # Stop requested
             
             # Process all remaining futures if not stopped
             if not (stop_requested and stop_requested()):
