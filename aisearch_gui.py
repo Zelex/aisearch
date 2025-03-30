@@ -57,9 +57,9 @@ class SearchThread(threading.Thread):
         self.extensions = extensions
         self.case_sensitive = case_sensitive
         self.color_output = False  # Always disable color output for GUI
-        self.context_lines = min(context_lines, 3)  # Limit context lines to 3 max
+        self.context_lines = context_lines
         self.ignore_comments = ignore_comments
-        self.max_terms = min(max_terms, 10)  # Limit max terms to 10
+        self.max_terms = max_terms
         self.max_workers = max_workers
         self.search_terms = []
         self.matches = []
@@ -79,10 +79,6 @@ class SearchThread(threading.Thread):
                 max_terms=self.max_terms, 
                 extensions=self.extensions)
             
-            # Limit search terms to prevent memory issues
-            if len(self.search_terms) > 8:
-                self.search_terms = self.search_terms[:8]
-                
             # Display terms
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
             self.parent.signal_update_terms.emit(terms_text)
@@ -367,7 +363,7 @@ class AISearchGUI(QMainWindow):
         terms_layout = QHBoxLayout()
         terms_layout.addWidget(QLabel("Max Terms:"))
         self.max_terms = QSpinBox()
-        self.max_terms.setRange(1, 10)  # Limit to 10 max
+        self.max_terms.setRange(1, 100)  # Increased max
         self.max_terms.setValue(8)
         terms_layout.addWidget(self.max_terms)
         middle_options.addLayout(terms_layout)
@@ -375,8 +371,8 @@ class AISearchGUI(QMainWindow):
         workers_layout = QHBoxLayout()
         workers_layout.addWidget(QLabel("Workers:"))
         self.max_workers = QSpinBox()
-        self.max_workers.setRange(1, 16)  # Reduced max workers
-        self.max_workers.setValue(4)  # Reduced default
+        self.max_workers.setRange(1, 64)  # Increased max workers
+        self.max_workers.setValue(4)
         workers_layout.addWidget(self.max_workers)
         middle_options.addLayout(workers_layout)
         options_layout.addLayout(middle_options)
@@ -386,7 +382,7 @@ class AISearchGUI(QMainWindow):
         context_layout = QHBoxLayout()
         context_layout.addWidget(QLabel("Context Lines:"))
         self.context_lines = QSpinBox()
-        self.context_lines.setRange(0, 3)  # Limit to 3 context lines
+        self.context_lines.setRange(0, 20)  # Increased max context lines
         self.context_lines.setValue(2)
         context_layout.addWidget(self.context_lines)
         right_options.addLayout(context_layout)
@@ -496,9 +492,9 @@ class AISearchGUI(QMainWindow):
         self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
         
         # SpinBoxes
-        self.max_terms.setValue(min(self.settings.value("max_terms", 8, type=int), 10))
-        self.max_workers.setValue(min(self.settings.value("max_workers", 4, type=int), 16))
-        self.context_lines.setValue(min(self.settings.value("context_lines", 2, type=int), 3))
+        self.max_terms.setValue(self.settings.value("max_terms", 8, type=int))
+        self.max_workers.setValue(self.settings.value("max_workers", 4, type=int))
+        self.context_lines.setValue(self.settings.value("context_lines", 2, type=int))
     
     def saveSettings(self):
         """Save current settings"""
