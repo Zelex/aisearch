@@ -1,11 +1,13 @@
 import sys
 import os
 import threading
+import atexit
+import gc
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
                              QListWidget, QProgressBar, QMessageBox)
-from PySide6.QtCore import Qt, Signal, Slot, QSize
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings
 from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat
 
 import aisearch
@@ -14,16 +16,35 @@ class StreamRedirector:
     def __init__(self, text_widget):
         self.text_widget = text_widget
         self.buffer = ""
+        self.max_buffer_size = 1000000  # ~1MB text limit
         
     def write(self, text):
         self.buffer += text
         if '\n' in self.buffer or len(self.buffer) > 80:
-            self.text_widget.append(self.buffer)
+            # Check if text widget is getting too large
+            if self.text_widget.document().characterCount() > self.max_buffer_size:
+                # Truncate the text to prevent memory issues
+                cursor = self.text_widget.textCursor()
+                cursor.movePosition(QTextCursor.Start)
+                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
+                cursor.removeSelectedText()
+                self.text_widget.insertPlainText("[...truncated to prevent memory issues...]\n\n")
+            
+            # Use insertPlainText instead of append to avoid extra newlines
+            cursor = self.text_widget.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(self.buffer)
+            self.text_widget.setTextCursor(cursor)
+            self.text_widget.ensureCursorVisible()
             self.buffer = ""
             
     def flush(self):
         if self.buffer:
-            self.text_widget.append(self.buffer)
+            cursor = self.text_widget.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(self.buffer)
+            self.text_widget.setTextCursor(cursor)
+            self.text_widget.ensureCursorVisible()
             self.buffer = ""
 
 class SearchThread(threading.Thread):
@@ -35,10 +56,10 @@ class SearchThread(threading.Thread):
         self.prompt = prompt
         self.extensions = extensions
         self.case_sensitive = case_sensitive
-        self.color_output = color_output
-        self.context_lines = context_lines
+        self.color_output = False  # Always disable color output for GUI
+        self.context_lines = min(context_lines, 3)  # Limit context lines to 3 max
         self.ignore_comments = ignore_comments
-        self.max_terms = max_terms
+        self.max_terms = min(max_terms, 10)  # Limit max terms to 10
         self.max_workers = max_workers
         self.search_terms = []
         self.matches = []
@@ -52,22 +73,42 @@ class SearchThread(threading.Thread):
                 max_terms=self.max_terms, 
                 extensions=self.extensions)
             
+            # Limit search terms to prevent memory issues
+            if len(self.search_terms) > 8:
+                self.search_terms = self.search_terms[:8]
+                
             # Display terms
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
             self.parent.signal_update_terms.emit(terms_text)
             
             # Search code
             self.parent.signal_update_status.emit("Searching code using regex patterns...")
-            self.matches = aisearch.search_code(
-                directory=self.directory,
-                search_terms=self.search_terms,
-                extensions=self.extensions,
-                case_sensitive=self.case_sensitive,
-                color_output=self.color_output,
-                context_lines=self.context_lines,
-                ignore_comments=self.ignore_comments,
-                max_workers=self.max_workers
-            )
+            
+            # Process in batches
+            all_matches = []
+            MAX_RESULTS = 100  # Hard limit on results
+            
+            try:
+                all_matches = aisearch.search_code(
+                    directory=self.directory,
+                    search_terms=self.search_terms,
+                    extensions=self.extensions,
+                    case_sensitive=self.case_sensitive,
+                    color_output=self.color_output,
+                    context_lines=self.context_lines,
+                    ignore_comments=self.ignore_comments,
+                    max_workers=self.max_workers
+                )
+                
+                # Truncate matches if too many
+                if len(all_matches) > MAX_RESULTS:
+                    self.matches = all_matches[:MAX_RESULTS]
+                    self.parent.signal_update_status.emit(f"Limited to {MAX_RESULTS} matches to prevent memory issues")
+                else:
+                    self.matches = all_matches
+            except Exception as e:
+                self.parent.signal_error.emit(f"Search error: {str(e)}")
+                self.matches = all_matches[:50] if len(all_matches) > 50 else all_matches
             
             self.parent.signal_search_complete.emit(len(self.matches))
         except Exception as e:
@@ -138,7 +179,14 @@ class AISearchGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.matches = []
+        self.search_thread = None
+        self.chat_thread = None
+        self.settings = QSettings("AICodeSearch", "AISearchGUI")
         self.setupUI()
+        self.loadSettings()
+        
+        # Register cleanup handlers
+        atexit.register(self.cleanup_resources)
         
     def setupUI(self):
         self.setWindowTitle("AI Code Search")
@@ -210,8 +258,10 @@ class AISearchGUI(QMainWindow):
         # Left options
         left_options = QVBoxLayout()
         self.case_sensitive = QCheckBox("Case Sensitive")
+        self.case_sensitive.setChecked(True)
         left_options.addWidget(self.case_sensitive)
         self.include_comments = QCheckBox("Include Comments")
+        self.include_comments.setChecked(True)  # Include comments by default
         left_options.addWidget(self.include_comments)
         options_layout.addLayout(left_options)
         
@@ -220,16 +270,16 @@ class AISearchGUI(QMainWindow):
         terms_layout = QHBoxLayout()
         terms_layout.addWidget(QLabel("Max Terms:"))
         self.max_terms = QSpinBox()
-        self.max_terms.setRange(1, 30)
-        self.max_terms.setValue(10)
+        self.max_terms.setRange(1, 10)  # Limit to 10 max
+        self.max_terms.setValue(8)
         terms_layout.addWidget(self.max_terms)
         middle_options.addLayout(terms_layout)
         
         workers_layout = QHBoxLayout()
         workers_layout.addWidget(QLabel("Workers:"))
         self.max_workers = QSpinBox()
-        self.max_workers.setRange(1, 32)
-        self.max_workers.setValue(8)
+        self.max_workers.setRange(1, 16)  # Reduced max workers
+        self.max_workers.setValue(4)  # Reduced default
         workers_layout.addWidget(self.max_workers)
         middle_options.addLayout(workers_layout)
         options_layout.addLayout(middle_options)
@@ -239,8 +289,8 @@ class AISearchGUI(QMainWindow):
         context_layout = QHBoxLayout()
         context_layout.addWidget(QLabel("Context Lines:"))
         self.context_lines = QSpinBox()
-        self.context_lines.setRange(0, 20)
-        self.context_lines.setValue(6)
+        self.context_lines.setRange(0, 3)  # Limit to 3 context lines
+        self.context_lines.setValue(2)
         context_layout.addWidget(self.context_lines)
         right_options.addLayout(context_layout)
         
@@ -318,6 +368,73 @@ class AISearchGUI(QMainWindow):
         
         self.setCentralWidget(main_widget)
     
+    def loadSettings(self):
+        """Load saved settings"""
+        # Directory
+        directory = self.settings.value("directory", "")
+        if directory and os.path.exists(directory):
+            self.dir_input.setText(directory)
+            
+        # Prompt
+        prompt = self.settings.value("prompt", "")
+        self.prompt_input.setText(prompt)
+        
+        # Extensions
+        extensions = self.settings.value("extensions", "")
+        self.ext_input.setText(extensions)
+        
+        # Checkboxes
+        self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
+        self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
+        
+        # SpinBoxes
+        self.max_terms.setValue(min(self.settings.value("max_terms", 8, type=int), 10))
+        self.max_workers.setValue(min(self.settings.value("max_workers", 4, type=int), 16))
+        self.context_lines.setValue(min(self.settings.value("context_lines", 2, type=int), 3))
+    
+    def saveSettings(self):
+        """Save current settings"""
+        self.settings.setValue("directory", self.dir_input.text())
+        self.settings.setValue("prompt", self.prompt_input.text())
+        self.settings.setValue("extensions", self.ext_input.text())
+        self.settings.setValue("case_sensitive", self.case_sensitive.isChecked())
+        self.settings.setValue("include_comments", self.include_comments.isChecked())
+        self.settings.setValue("max_terms", self.max_terms.value())
+        self.settings.setValue("max_workers", self.max_workers.value())
+        self.settings.setValue("context_lines", self.context_lines.value())
+    
+    def closeEvent(self, event):
+        """Handle window close event"""
+        self.saveSettings()
+        
+        # Clean up threads and processes before closing
+        self.cleanup_resources()
+        
+        super().closeEvent(event)
+    
+    def cleanup_resources(self):
+        """Clean up resources to prevent leaks"""
+        # Stop any running threads
+        if hasattr(self, 'search_thread') and self.search_thread is not None:
+            # The thread might be accessing multiprocessing resources
+            self.search_thread = None
+        
+        if hasattr(self, 'chat_thread') and self.chat_thread is not None:
+            self.chat_thread = None
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Explicitly clean multiprocessing resources
+        try:
+            import multiprocessing as mp
+            if hasattr(mp, 'active_children'):
+                for child in mp.active_children():
+                    child.terminate()
+                    child.join(0.1)
+        except:
+            pass
+    
     def browse_directory(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Directory")
         if directory:
@@ -340,11 +457,16 @@ class AISearchGUI(QMainWindow):
         extensions_text = self.ext_input.text().strip()
         extensions = extensions_text.split() if extensions_text else None
         
-        # Clear previous results
+        # Clear previous results - more aggressive memory cleanup
         self.results_text.clear()
         self.chat_output.clear()
+        self.chat_input.clear()
         self.chat_button.setEnabled(False)
+        
+        # Force garbage collection
         self.matches = []
+        import gc
+        gc.collect()
         
         # Show progress
         self.progress_bar.setVisible(True)
@@ -361,7 +483,7 @@ class AISearchGUI(QMainWindow):
             prompt,
             extensions,
             self.case_sensitive.isChecked(),
-            True,  # color_output (we handle this differently in GUI)
+            False,  # color_output (we handle this differently in GUI)
             self.context_lines.value(),
             not self.include_comments.isChecked(),
             self.max_terms.value(),
@@ -375,8 +497,10 @@ class AISearchGUI(QMainWindow):
         
     @Slot(str)
     def update_terms(self, terms_text):
-        self.results_text.append(terms_text)
-        self.results_text.append("\n")
+        # Clear first if getting large to prevent memory issues
+        if self.results_text.document().characterCount() > 500000:
+            self.results_text.clear()
+        self.results_text.insertPlainText(terms_text + "\n\n")
     
     @Slot(int)
     def search_complete(self, match_count):
@@ -387,16 +511,28 @@ class AISearchGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.search_button.setEnabled(True)
         
-        # Store matches and enable chat
-        self.matches = self.search_thread.matches
+        # Ensure we don't process too many matches
+        if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
+            if len(self.search_thread.matches) > 100:
+                self.matches = self.search_thread.matches[:100]
+                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(self.search_thread.matches)}) to prevent memory issues.\n")
+            else:
+                self.matches = self.search_thread.matches
+        else:
+            self.matches = []
+            
         if match_count > 0:
             self.chat_button.setEnabled(True)
             self.chat_action.setEnabled(True)
-            self.statusBar().showMessage(f"Search complete. Found {match_count} matches.")
+            self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
         else:
             self.chat_button.setEnabled(False)
             self.chat_action.setEnabled(False)
             self.statusBar().showMessage("Search complete. No matches found.")
+            
+        # Clear reference to search thread
+        self.search_thread = None
+        gc.collect()
     
     def clear_results(self):
         """Clear all search results and chat history"""
@@ -554,4 +690,18 @@ if __name__ == "__main__":
     
     window = AISearchGUI()
     window.show()
+    
+    # Add cleanup to Python's exit handling
+    def cleanup():
+        window.cleanup_resources()
+        # Extra cleanup for multiprocessing
+        import multiprocessing as mp
+        if hasattr(mp, '_resource_tracker') and hasattr(mp._resource_tracker, '_stop'):
+            try:
+                mp._resource_tracker._stop()
+            except:
+                pass
+    
+    atexit.register(cleanup)
+    
     sys.exit(app.exec()) 

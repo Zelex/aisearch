@@ -1,84 +1,83 @@
-# AI Search
+# AISearch: AI-Powered Code Search Tool
 
-AI Search is a command-line utility that uses AI to generate intelligent search patterns for codebases. It leverages Claude from Anthropic to generate contextually relevant regex search patterns from natural language prompts, then searches your codebase with those patterns.
+AISearch is a powerful tool that leverages Claude 3.7 Sonnet to generate intelligent search patterns for codebases. It transforms natural language descriptions into effective regex search patterns, searches your code, and allows you to chat with AI about the results.
+
+![AISearch Screenshot](https://i.imgur.com/your_screenshot.png)
 
 ## Features
 
-- Generate regex search patterns from natural language prompts using Claude 3.7
-- Search across codebases with parallel processing
-- Always uses regex patterns for powerful pattern matching
-- Filter by file extensions
-- Highlight matches in color
-- Interactive chat to analyze search results with Claude
-- Configurable context lines, case sensitivity, and more
+- **Natural language search**: Describe what you're looking for in plain English
+- **AI-powered pattern generation**: Claude 3.7 creates optimal regex search patterns
+- **Multi-threaded search**: Fast parallel processing to scan codebases
+- **Interactive analysis**: Chat with Claude about the search results
+- **Modern UI**: Choose between a sleek GUI or efficient CLI
+- **Code context**: View relevant lines before and after matches
+- **Language filtering**: Focus on specific file types
 
-## Prerequisites
+## Quick Start
 
-- Python 3.7+
-- Anthropic API key
+### Easy Installation
 
-## Installation
+Run the installer script to set up all dependencies:
 
-1. Clone this repository
-2. Install dependencies:
-```
-pip install anthropic tqdm
-```
-3. Set your Anthropic API key:
-```
-export ANTHROPIC_API_KEY=your_api_key_here
+```bash
+python install.py
 ```
 
-## Usage
+### Running AISearch
 
-Basic usage:
+Use the launcher script to run either the GUI or CLI version:
 
+```bash
+# Launch GUI (default if available)
+./run_aisearch.py
+
+# Explicitly launch GUI
+./run_aisearch.py --gui
+
+# Launch CLI with arguments
+./run_aisearch.py --cli /path/to/code --prompt "your search query"
 ```
+
+## Versions
+
+### GUI Version
+
+The graphical interface provides an intuitive way to:
+- Configure search parameters
+- View search results
+- Chat with Claude about findings
+- Save and manage search sessions
+
+To launch the GUI directly:
+```bash
+python aisearch_gui.py
+```
+
+### CLI Version
+
+The command-line interface is perfect for:
+- Integration with scripts and automation
+- Quick searches from the terminal
+- Remote server usage
+- Power users who prefer terminal workflows
+
+To use the CLI directly:
+```bash
 python aisearch.py /path/to/codebase --prompt "your search query"
 ```
 
-### Examples
+For detailed CLI documentation, see [CLI Documentation](aisearch_readme.md).
 
-Search for authentication logic in a Python project:
-```
-python aisearch.py ./my_project --prompt "user authentication implementation" --extensions .py
-```
+## Requirements
 
-Find security vulnerabilities:
-```
-python aisearch.py ./webapp --prompt "potential SQL injection vulnerabilities"
-```
+- Python 3.7+
+- Anthropic API key
+- Dependencies:
+  - anthropic
+  - tqdm
+  - pyside6 (for GUI version)
 
-Look for memory leaks in C++ code with extended context:
-```
-python aisearch.py ./src --prompt "memory allocation without proper cleanup" --extensions .cpp .h --context 10
-```
+## License
 
-### Command Line Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `directory` | Directory to search in |
-| `--prompt` | Natural language prompt to generate search terms |
-| `-e, --extensions` | File extensions to include (e.g., .py .js) |
-| `-i, --insensitive` | Case-insensitive search |
-| `--no-color` | Disable colored output |
-| `--no-chat` | Skip chat mode |
-| `--include-comments` | Include comments in search results |
-| `--terms` | Number of search terms to generate (default: 10) |
-| `--context` | Lines of context before/after match (default: 6) |
-| `--workers` | Number of parallel workers (default: 2x CPU cores) |
-
-## Workflow
-
-1. You provide a natural language prompt about what you're looking for
-2. Claude generates relevant regex search patterns
-3. The tool searches your codebase with those patterns
-4. Matches are displayed with context
-5. You can chat with Claude about the results for deeper analysis
-
-## Tips
-
-- Be specific in your prompts for better search patterns
-- Add file extensions to focus on specific languages
-- Increase context lines when you need more surrounding code 
+MIT 
