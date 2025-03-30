@@ -6,7 +6,7 @@ import gc
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
-                             QListWidget, QProgressBar, QMessageBox)
+                             QListWidget, QProgressBar, QMessageBox, QDialog)
 from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings
 from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat
 
@@ -215,6 +215,12 @@ class AISearchGUI(QMainWindow):
         self.chat_action.setToolTip("Chat about results")
         self.chat_action.setEnabled(False)
         
+        self.toolbar.addSeparator()
+        
+        api_action = self.toolbar.addAction("API Key")
+        api_action.triggered.connect(self.show_api_key_dialog)
+        api_action.setToolTip("Set your Anthropic API key")
+        
         # Main layout
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
@@ -383,6 +389,12 @@ class AISearchGUI(QMainWindow):
         extensions = self.settings.value("extensions", "")
         self.ext_input.setText(extensions)
         
+        # API Key (stored encrypted)
+        self.api_key = self.settings.value("api_key", "")
+        # Set environment variable if API key is available
+        if self.api_key:
+            os.environ["ANTHROPIC_API_KEY"] = self.api_key
+        
         # Checkboxes
         self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
         self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
@@ -402,6 +414,10 @@ class AISearchGUI(QMainWindow):
         self.settings.setValue("max_terms", self.max_terms.value())
         self.settings.setValue("max_workers", self.max_workers.value())
         self.settings.setValue("context_lines", self.context_lines.value())
+        
+        # Save API key if present
+        if hasattr(self, 'api_key') and self.api_key:
+            self.settings.setValue("api_key", self.api_key)
     
     def closeEvent(self, event):
         """Handle window close event"""
@@ -451,6 +467,12 @@ class AISearchGUI(QMainWindow):
         
         if not prompt:
             self.show_error("Please enter a search prompt")
+            return
+        
+        # Check for API key
+        if not hasattr(self, 'api_key') or not self.api_key:
+            self.show_error("Please set your Anthropic API key first")
+            self.show_api_key_dialog()
             return
         
         # Get extensions
@@ -574,6 +596,54 @@ class AISearchGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         self.search_button.setEnabled(True)
         self.chat_button.setEnabled(True if self.matches else False)
+    
+    def show_api_key_dialog(self):
+        """Show dialog to input API key"""
+        current_key = getattr(self, 'api_key', '')
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Anthropic API Key")
+        layout = QVBoxLayout(dialog)
+        
+        # Instructions
+        instructions = QLabel("Enter your Anthropic API key below. The key will be stored locally.")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # API Key input
+        key_layout = QHBoxLayout()
+        key_layout.addWidget(QLabel("API Key:"))
+        key_input = QLineEdit()
+        key_input.setEchoMode(QLineEdit.Password)  # Hide the key
+        key_input.setText(current_key)
+        key_layout.addWidget(key_input)
+        layout.addLayout(key_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        save_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        button_layout.addWidget(save_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        # Connect buttons
+        save_btn.clicked.connect(lambda: self.save_api_key(key_input.text(), dialog))
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()
+    
+    def save_api_key(self, key, dialog):
+        """Save API key and close dialog"""
+        if key:
+            self.api_key = key
+            # Set environment variable for immediate use
+            os.environ["ANTHROPIC_API_KEY"] = key
+            self.saveSettings()
+            dialog.accept()
+            self.statusBar().showMessage("API Key saved")
+        else:
+            QMessageBox.warning(dialog, "Error", "API Key cannot be empty")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
