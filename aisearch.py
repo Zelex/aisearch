@@ -342,7 +342,7 @@ Focus on explaining:
 3. Connections between different matches
 4. Clear, factual analysis based only on the provided code
 
-When referring to matches, ALWAYS use the file path and line number (e.g., 'In file.cpp:123') rather than match numbers.
+When referring to matches, ALWAYS use the FULL file path and line number (e.g., '/path/to/file.cpp:123') rather than match numbers or just the filename.
 Keep your responses concise and to the point."""
 
     print(f"\nEntering chat mode. {len(matches)} matches found for: '{original_prompt}'")
