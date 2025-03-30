@@ -2,7 +2,7 @@
 
 AISearch is a powerful tool that leverages Claude 3.7 Sonnet to generate intelligent search patterns for codebases. It transforms natural language descriptions into effective regex search patterns, searches your code, and allows you to chat with AI about the results.
 
-![AISearch Screenshot](https://i.imgur.com/your_screenshot.png)
+![AISearch Screenshot](https://i.imgur.com/pLD4o8T.png)
 
 ## Features
 
