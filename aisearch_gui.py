@@ -4,6 +4,9 @@ import threading
 import atexit
 import gc
 import time
+import re
+import subprocess
+import platform
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
@@ -169,6 +172,72 @@ class ChatThread(threading.Thread):
         except Exception as e:
             self.parent.signal_error.emit(str(e))
 
+class ClickableTextEdit(QTextEdit):
+    """Custom QTextEdit that can detect clicks on file references"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMouseTracking(True)
+        self.setCursorWidth(1)
+        # Enhanced pattern to match more file reference formats
+        self.file_match_pattern = re.compile(r'([\/\w\.-]+\.[a-zA-Z0-9]+):(\d+)')
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        self.setStatusTip("Click on file:line references to open in your default editor")
+    
+    def find_main_window(self):
+        """Find the main window by traversing up the parent hierarchy"""
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, AISearchGUI):
+                return parent
+            parent = parent.parent()
+        return None
+        
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement to highlight file references"""
+        cursor = self.cursorForPosition(event.pos())
+        cursor.select(QTextCursor.LineUnderCursor)
+        line_text = cursor.selectedText()
+        
+        # Check if cursor is on file:line pattern
+        if self.file_match_pattern.search(line_text):
+            self.viewport().setCursor(Qt.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.IBeamCursor)
+            
+        super().mouseMoveEvent(event)
+        
+    def mousePressEvent(self, event):
+        """Handle mouse press to detect file references"""
+        if event.button() == Qt.LeftButton:
+            cursor = self.cursorForPosition(event.pos())
+            cursor.select(QTextCursor.LineUnderCursor)
+            line_text = cursor.selectedText()
+            
+            # Look for file:line pattern
+            match = self.file_match_pattern.search(line_text)
+            if match:
+                file_path = match.group(1)
+                line_number = match.group(2)
+                
+                # Find the main window
+                main_window = self.find_main_window()
+                if main_window is None:
+                    return
+                
+                # If it's a relative path, make it absolute
+                if not os.path.isabs(file_path):
+                    # Use the current search directory as the base
+                    base_dir = main_window.dir_input.text()
+                    file_path = os.path.join(base_dir, file_path)
+                
+                if os.path.exists(file_path):
+                    main_window.open_file_in_editor(file_path, line_number)
+                    return
+        
+        # Call the parent implementation for normal text selection
+        super().mousePressEvent(event)
+
 class AISearchGUI(QMainWindow):
     signal_update_status = Signal(str)
     signal_update_terms = Signal(str)
@@ -319,8 +388,13 @@ class AISearchGUI(QMainWindow):
         results_layout = QVBoxLayout(results_widget)
         results_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.results_text = QTextEdit()
-        self.results_text.setReadOnly(True)
+        # Add a label to indicate clickable references
+        click_hint = QLabel("💡 Click on any file:line reference to open in your default editor")
+        click_hint.setStyleSheet("color: #999999; font-style: italic;")
+        results_layout.addWidget(click_hint)
+        
+        # Use our custom ClickableTextEdit instead of QTextEdit
+        self.results_text = ClickableTextEdit(results_widget)
         # Use a better cross-platform monospace font
         self.results_text.setFont(QFont("Menlo, Monaco, Courier New", 10))
         results_layout.addWidget(self.results_text)
@@ -349,8 +423,8 @@ class AISearchGUI(QMainWindow):
         self.chat_input.setPalette(placeholder_palette)
         chat_layout.addWidget(self.chat_input)
         
-        self.chat_output = QTextEdit()
-        self.chat_output.setReadOnly(True)
+        # Use our custom ClickableTextEdit for chat output as well
+        self.chat_output = ClickableTextEdit(chat_widget)
         chat_layout.addWidget(self.chat_output)
         
         splitter.addWidget(chat_widget)
@@ -706,6 +780,62 @@ class AISearchGUI(QMainWindow):
             self.statusBar().showMessage("API Key saved")
         else:
             QMessageBox.warning(dialog, "Error", "API Key cannot be empty")
+
+    def open_file_in_editor(self, file_path, line_number):
+        """Open a file at a specific line in the default editor"""
+        try:
+            system = platform.system()
+            line_num = int(line_number)
+            
+            if system == "Darwin":  # macOS
+                # Try to use Visual Studio Code if available
+                if os.path.exists("/Applications/Visual Studio Code.app"):
+                    subprocess.run(["open", "-a", "Visual Studio Code", "--args", "-g", f"{file_path}:{line_num}"])
+                # Try to use Sublime Text if available
+                elif os.path.exists("/Applications/Sublime Text.app"):
+                    subprocess.run(["open", "-a", "Sublime Text", "--args", f"{file_path}:{line_num}"])
+                else:
+                    # Fallback to TextEdit (doesn't support line numbers)
+                    subprocess.run(["open", "-a", "TextEdit", file_path])
+                
+                self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
+                
+            elif system == "Windows":
+                # Try to use VSCode if installed
+                vscode_path = os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe")
+                if os.path.exists(vscode_path):
+                    subprocess.run([vscode_path, "-g", f"{file_path}:{line_num}"])
+                # Try Notepad++ if installed
+                elif os.path.exists("C:\\Program Files\\Notepad++\\notepad++.exe"):
+                    subprocess.run(["C:\\Program Files\\Notepad++\\notepad++.exe", "-n" + line_number, file_path])
+                else:
+                    # Fallback to default application
+                    os.startfile(file_path)
+                
+                self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
+                
+            elif system == "Linux":
+                # Try common editors with line number support
+                # Try VSCode
+                if subprocess.run(["which", "code"], stdout=subprocess.DEVNULL).returncode == 0:
+                    subprocess.run(["code", "-g", f"{file_path}:{line_num}"])
+                # Try gedit
+                elif subprocess.run(["which", "gedit"], stdout=subprocess.DEVNULL).returncode == 0:
+                    subprocess.run(["gedit", f"{file_path}+{line_num}"])
+                # Try vim in terminal
+                elif subprocess.run(["which", "vim"], stdout=subprocess.DEVNULL).returncode == 0:
+                    subprocess.run(["x-terminal-emulator", "-e", f"vim +{line_num} {file_path}"])
+                else:
+                    # Fallback to xdg-open
+                    subprocess.run(["xdg-open", file_path])
+                
+                self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
+                
+            else:
+                self.statusBar().showMessage(f"Unsupported platform: {system}")
+                
+        except Exception as e:
+            self.show_error(f"Error opening file: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
