@@ -227,7 +227,7 @@ def fast_walk(directory, skip_dirs=None):
             continue
 
 
-def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_output, context_lines, ignore_comments, sanitized_patterns):
+def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_output, context_lines, ignore_comments, sanitized_patterns, compiled_patterns=None):
     """Search a single file for all terms and return matches."""
     file_matches = []
     
@@ -235,24 +235,27 @@ def search_file(path, file_ext, search_terms, case_sensitive, use_regex, color_o
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
 
-        for term in search_terms:
+        for i, term in enumerate(search_terms):
             flags = 0 if case_sensitive else re.IGNORECASE
             
             if use_regex:
-                try:
-                    pattern = re.compile(term, flags)
-                except re.error:
-                    # If pattern is already sanitized, use it
-                    if term in sanitized_patterns:
-                        sanitized_term = sanitized_patterns[term]
-                    else:
-                        sanitized_term = sanitize_regex_pattern(term)
-                        sanitized_patterns[term] = sanitized_term
-                    
+                if compiled_patterns:
+                    pattern = compiled_patterns[i]
+                else:
                     try:
-                        pattern = re.compile(sanitized_term, flags)
+                        pattern = re.compile(term, flags)
                     except re.error:
-                        continue
+                        # If pattern is already sanitized, use it
+                        if term in sanitized_patterns:
+                            sanitized_term = sanitized_patterns[term]
+                        else:
+                            sanitized_term = sanitize_regex_pattern(term)
+                            sanitized_patterns[term] = sanitized_term
+                        
+                        try:
+                            pattern = re.compile(sanitized_term, flags)
+                        except re.error:
+                            continue
             else:
                 pattern = None
 
@@ -311,6 +314,23 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
 
     # Track which patterns have already been sanitized to avoid duplicate warnings
     sanitized_patterns = {}
+    
+    # Precompile regex patterns
+    compiled_patterns = []
+    flags = 0 if case_sensitive else re.IGNORECASE
+    for term in search_terms:
+        try:
+            pattern = re.compile(term, flags)
+        except re.error:
+            sanitized_term = sanitize_regex_pattern(term)
+            sanitized_patterns[term] = sanitized_term
+            try:
+                pattern = re.compile(sanitized_term, flags)
+            except re.error:
+                # If compilation still fails, use a pattern that won't match anything
+                pattern = re.compile(r'(?!x)x')  # This pattern always fails to match
+        compiled_patterns.append(pattern)
+    
     all_matches = []
     total_files = 0
     processed_files = 0
@@ -421,7 +441,8 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                         color_output, 
                         context_lines, 
                         ignore_comments, 
-                        sanitized_patterns
+                        sanitized_patterns,
+                        compiled_patterns
                     )
                     futures[future] = path
                     
