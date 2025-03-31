@@ -188,8 +188,9 @@ class ClickableTextEdit(QTextEdit):
         self.setReadOnly(True)
         self.setMouseTracking(True)
         self.setCursorWidth(1)
-        # Enhanced pattern to match more file reference formats
-        self.file_match_pattern = re.compile(r'([\/\w\.-]+\.[a-zA-Z0-9]+):(\d+)')
+        # Enhanced pattern to match more file reference formats, including Windows paths with \\?\ prefix
+        self.file_match_pattern = re.compile(r'(?:\\\?\\?)?([A-Za-z]:\\[\/\\\w\.-]+(?:\.[a-zA-Z0-9]+)?):(\d+)')
+        # Remove text selection flags to prevent automatic selection
         self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.setStatusTip("Click on file:line references to open in your default editor")
     
@@ -219,6 +220,7 @@ class ClickableTextEdit(QTextEdit):
     def mousePressEvent(self, event):
         """Handle mouse press to detect file references"""
         if event.button() == Qt.LeftButton:
+            # Get the line under the cursor
             cursor = self.cursorForPosition(event.pos())
             cursor.select(QTextCursor.LineUnderCursor)
             line_text = cursor.selectedText()
@@ -238,13 +240,27 @@ class ClickableTextEdit(QTextEdit):
                 if not os.path.isabs(file_path):
                     # Use the current search directory as the base
                     base_dir = main_window.dir_input.text()
+                    # Normalize path separators
+                    file_path = file_path.replace('\\', '/')
+                    base_dir = base_dir.replace('\\', '/')
+                    # Remove any leading slashes from file_path
+                    file_path = file_path.lstrip('/')
+                    # Join paths
                     file_path = os.path.join(base_dir, file_path)
+                    # Normalize the final path
+                    file_path = os.path.normpath(file_path)
+                else:
+                    # For absolute paths, just normalize the separators
+                    file_path = os.path.normpath(file_path)
                 
                 if os.path.exists(file_path):
                     main_window.open_file_in_editor(file_path, line_number)
-                    return
+                # Accept the event to prevent text selection
+                event.accept()
+                return
         
-        # Call the parent implementation for normal text selection
+        # If we get here, either it's not a left click or no file pattern was found
+        # Let the parent handle the event for normal text selection
         super().mousePressEvent(event)
 
 class AISearchGUI(QMainWindow):
@@ -819,22 +835,48 @@ class AISearchGUI(QMainWindow):
                 elif os.path.exists("/Applications/Sublime Text.app"):
                     subprocess.run(["open", "-a", "Sublime Text", "--args", f"{file_path}:{line_num}"])
                 else:
-                    # Fallback to TextEdit (doesn't support line numbers)
                     subprocess.run(["open", "-a", "TextEdit", file_path])
                 
                 self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
                 
             elif system == "Windows":
-                # Try to use VSCode if installed
-                vscode_path = os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe")
-                if os.path.exists(vscode_path):
-                    subprocess.run([vscode_path, "-g", f"{file_path}:{line_num}"])
-                # Try Notepad++ if installed
-                elif os.path.exists("C:\\Program Files\\Notepad++\\notepad++.exe"):
-                    subprocess.run(["C:\\Program Files\\Notepad++\\notepad++.exe", "-n" + line_number, file_path])
-                else:
-                    # Fallback to default application
-                    os.startfile(file_path)
+                # Try to use VSCode if installed (check multiple possible locations)
+                vscode_paths = [
+                    os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"),
+                    os.path.expandvars("%PROGRAMFILES%\\Microsoft VS Code\\Code.exe"),
+                    os.path.expandvars("%USERPROFILE%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe")
+                ]
+                
+                vscode_found = False
+                for vscode_path in vscode_paths:
+                    if os.path.exists(vscode_path):
+                        subprocess.run([vscode_path, "-g", f"{file_path}:{line_num}"])
+                        vscode_found = True
+                        break
+                
+                if not vscode_found:
+                    # Try Notepad++ if installed (check multiple possible locations)
+                    notepadpp_paths = [
+                        "C:\\Program Files\\Notepad++\\notepad++.exe",
+                        "C:\\Program Files (x86)\\Notepad++\\notepad++.exe",
+                        os.path.expandvars("%PROGRAMFILES%\\Notepad++\\notepad++.exe"),
+                        os.path.expandvars("%PROGRAMFILES(X86)%\\Notepad++\\notepad++.exe")
+                    ]
+                    
+                    notepadpp_found = False
+                    for notepadpp_path in notepadpp_paths:
+                        if os.path.exists(notepadpp_path):
+                            subprocess.run([notepadpp_path, "-n" + line_number, file_path])
+                            notepadpp_found = True
+                            break
+                    
+                    if not notepadpp_found:
+                        # Try to use the default program associated with the file type
+                        try:
+                            subprocess.run(["cmd", "/c", "start", "", "/b", file_path])
+                        except Exception:
+                            # Fallback to os.startfile if subprocess fails
+                            os.startfile(file_path)
                 
                 self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
                 
@@ -850,7 +892,6 @@ class AISearchGUI(QMainWindow):
                 elif subprocess.run(["which", "vim"], stdout=subprocess.DEVNULL).returncode == 0:
                     subprocess.run(["x-terminal-emulator", "-e", f"vim +{line_num} {file_path}"])
                 else:
-                    # Fallback to xdg-open
                     subprocess.run(["xdg-open", file_path])
                 
                 self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
