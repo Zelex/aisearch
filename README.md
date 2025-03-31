@@ -1,15 +1,15 @@
 # AISearch: AI-Powered Code Search Tool
 
-AISearch is a powerful tool that leverages Claude 3.7 Sonnet to generate intelligent search patterns for codebases. It transforms natural language descriptions into effective regex search patterns, searches your code, and allows you to chat with AI about the results.
+AISearch is a powerful tool that leverages Claude 3.7 Sonnet or o3-mini to generate intelligent search patterns for codebases. It transforms natural language descriptions into effective regex search patterns, searches your code, and allows you to chat with AI about the results.
 
 ![AISearch Screenshot](https://i.imgur.com/rtK8ijQ.png)
 
 ## Features
 
 - **Natural language search**: Describe what you're looking for in plain English
-- **AI-powered pattern generation**: Claude 3.7 creates optimal regex search patterns
+- **AI-powered pattern generation**: Claude 3.7 or o3-mini creates optimal regex search patterns
 - **Multi-threaded search**: Fast parallel processing to scan codebases
-- **Interactive analysis**: Chat with Claude about the search results
+- **Interactive analysis**: Chat with AI about the search results
 - **Modern UI**: Choose between a sleek GUI or efficient CLI
 - **Code context**: View relevant lines before and after matches
 - **Language filtering**: Focus on specific file types
@@ -17,6 +17,7 @@ AISearch is a powerful tool that leverages Claude 3.7 Sonnet to generate intelli
 - **Comment filtering**: Option to exclude code comments from search
 - **Clickable results**: Open matched files directly in your editor
 - **Search refinement**: AI-powered search term refinement based on initial results
+- **Multiple AI providers**: Choose between Anthropic's Claude or OpenAI's o3-mini
 
 ## Supported Languages
 
@@ -68,12 +69,13 @@ Use the launcher script to run either the GUI or CLI version:
 The graphical interface provides an intuitive way to:
 - Configure search parameters (case sensitivity, context lines, etc.)
 - View search results with syntax highlighting
-- Chat with Claude about findings
+- Chat with AI about findings
 - Save and manage search sessions
 - Click on results to open files in your editor
 - Refine searches based on initial results
 - Filter by file extensions
 - Exclude comments from search
+- Choose between Claude and o3-mini
 
 To launch the GUI directly:
 ```bash
@@ -98,9 +100,10 @@ For detailed CLI documentation, see [CLI Documentation](aisearch_readme.md).
 ## Requirements
 
 - Python 3.7+
-- Anthropic API key (for Claude 3.7 Sonnet)
+- Anthropic API key (for Claude 3.7 Sonnet) or OpenAI API key (for o3-mini)
 - Dependencies:
   - anthropic
+  - openai
   - tqdm
   - pyside6 (for GUI version)
 

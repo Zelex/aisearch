@@ -49,7 +49,7 @@ class StreamRedirector:
 
 class SearchThread(threading.Thread):
     def __init__(self, parent, directory, prompt, extensions, case_sensitive, 
-                color_output, context_lines, ignore_comments, max_terms, max_workers):
+                color_output, context_lines, ignore_comments, max_terms, max_workers, provider):
         super().__init__()
         self.parent = parent
         self.directory = directory
@@ -65,6 +65,7 @@ class SearchThread(threading.Thread):
         self.matches = []
         self.running = True
         self.stop_requested = False
+        self.provider = provider
         
     def run(self):
         try:
@@ -73,7 +74,7 @@ class SearchThread(threading.Thread):
                 self.running = False
                 return
                 
-            self.parent.signal_update_status.emit("Querying Claude for search terms...")
+            self.parent.signal_update_status.emit(f"Querying {self.provider.title()} for search terms...")
             
             # Check if this is a refined search (we have previous matches)
             if hasattr(self.parent, 'matches') and self.parent.matches:
@@ -82,14 +83,16 @@ class SearchThread(threading.Thread):
                     self.parent.matches,
                     max_terms=self.max_terms,
                     extensions=self.extensions,
-                    context_lines=self.context_lines
+                    context_lines=self.context_lines,
+                    provider=self.provider
                 )
                 self.parent.signal_update_status.emit("Generated refined search terms based on current results...")
             else:
                 self.search_terms = aisearch.get_search_terms_from_prompt(
                     self.prompt,
                     max_terms=self.max_terms,
-                    extensions=self.extensions
+                    extensions=self.extensions,
+                    provider=self.provider
                 )
             
             # Display terms
@@ -146,13 +149,14 @@ class ChatThread(threading.Thread):
         self.matches = matches
         self.prompt = prompt
         self.question = question
+        self.provider = parent.provider_combo.currentText()
         
     def run(self):
         try:
-            self.parent.signal_update_status.emit("Waiting for Claude's response...")
+            self.parent.signal_update_status.emit(f"Waiting for {self.provider.title()}'s response...")
             
-            # Use a simplified version since we can't easily use streaming in the GUI
-            client = aisearch.anthropic.Anthropic()
+            # Use the provider-agnostic client
+            client = aisearch.get_ai_client(self.provider)
             
             # Prepare context
             context_sections = []
@@ -180,15 +184,24 @@ class ChatThread(threading.Thread):
             else:
                 messages.append({"role": "user", "content": "Please analyze these findings."})
             
-            response = client.messages.create(
-                model="claude-3-7-sonnet-latest",
-                max_tokens=4096,
-                temperature=1,
-                system=system_message,
-                messages=messages
-            )
+            if self.provider == "anthropic":
+                response = client.messages.create(
+                    model="claude-3-7-sonnet-latest",
+                    max_tokens=4096,
+                    temperature=1,
+                    system=system_message,
+                    messages=messages
+                )
+                response_text = response.content[0].text
+            else:  # OpenAI
+                response = client.chat.completions.create(
+                    model="gpt-4-turbo-preview",
+                    messages=[{"role": "system", "content": system_message}] + messages,
+                    temperature=1,
+                    max_tokens=4096
+                )
+                response_text = response.choices[0].message.content
             
-            response_text = response.content[0].text
             self.parent.signal_chat_response.emit(response_text)
             
         except Exception as e:
@@ -340,9 +353,24 @@ class AISearchGUI(QMainWindow):
         
         self.toolbar.addSeparator()
         
-        api_action = self.toolbar.addAction("API Key")
-        api_action.triggered.connect(self.show_api_key_dialog)
-        api_action.setToolTip("Set your Anthropic API key")
+        # Add API key actions
+        anthropic_key_action = self.toolbar.addAction("Anthropic Key")
+        anthropic_key_action.triggered.connect(lambda: self.show_api_key_dialog("anthropic"))
+        anthropic_key_action.setToolTip("Set your Anthropic API key")
+        
+        openai_key_action = self.toolbar.addAction("OpenAI Key")
+        openai_key_action.triggered.connect(lambda: self.show_api_key_dialog("openai"))
+        openai_key_action.setToolTip("Set your OpenAI API key")
+        
+        self.toolbar.addSeparator()
+        
+        # Add provider selection
+        provider_layout = QHBoxLayout()
+        provider_layout.addWidget(QLabel("AI Provider:"))
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["anthropic", "openai"])
+        self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
+        provider_layout.addWidget(self.provider_combo)
         
         # Main layout
         main_widget = QWidget()
@@ -463,6 +491,7 @@ class AISearchGUI(QMainWindow):
         options_layout.addLayout(right_options)
         
         config_layout.addLayout(options_layout)
+        config_layout.addLayout(provider_layout)
         main_layout.addWidget(config_group)
         
         # Splitter for results and chat
@@ -492,8 +521,8 @@ class AISearchGUI(QMainWindow):
         chat_layout.setContentsMargins(0, 0, 0, 0)
         
         chat_header = QHBoxLayout()
-        chat_header.addWidget(QLabel("Chat with Claude about results:"))
-        self.chat_button = QPushButton("Ask Claude")
+        chat_header.addWidget(QLabel("Chat with AI about results:"))
+        self.chat_button = QPushButton("Ask AI")
         self.chat_button.clicked.connect(self.start_chat)
         self.chat_button.setEnabled(False)
         chat_header.addWidget(self.chat_button)
@@ -551,11 +580,19 @@ class AISearchGUI(QMainWindow):
         extensions = self.settings.value("extensions", "")
         self.ext_input.setText(extensions)
         
-        # API Key (stored encrypted)
-        self.api_key = self.settings.value("api_key", "")
-        # Set environment variable if API key is available
-        if self.api_key:
-            os.environ["ANTHROPIC_API_KEY"] = self.api_key
+        # API Keys (stored encrypted)
+        self.anthropic_key = self.settings.value("anthropic_api_key", "")
+        self.openai_key = self.settings.value("openai_api_key", "")
+        
+        # Set environment variables if API keys are available
+        if self.anthropic_key:
+            os.environ["ANTHROPIC_API_KEY"] = self.anthropic_key
+        if self.openai_key:
+            os.environ["OPENAI_API_KEY"] = self.openai_key
+        
+        # Provider
+        provider = self.settings.value("provider", "anthropic")
+        self.provider_combo.setCurrentText(provider)
         
         # Checkboxes
         self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
@@ -576,10 +613,13 @@ class AISearchGUI(QMainWindow):
         self.settings.setValue("max_terms", self.max_terms.value())
         self.settings.setValue("max_workers", self.max_workers.value())
         self.settings.setValue("context_lines", self.context_lines.value())
+        self.settings.setValue("provider", self.provider_combo.currentText())
         
-        # Save API key if present
-        if hasattr(self, 'api_key') and self.api_key:
-            self.settings.setValue("api_key", self.api_key)
+        # Save API keys if present
+        if hasattr(self, 'anthropic_key') and self.anthropic_key:
+            self.settings.setValue("anthropic_api_key", self.anthropic_key)
+        if hasattr(self, 'openai_key') and self.openai_key:
+            self.settings.setValue("openai_api_key", self.openai_key)
     
     def closeEvent(self, event):
         """Handle window close event"""
@@ -626,6 +666,7 @@ class AISearchGUI(QMainWindow):
         # Validate inputs
         directory = self.dir_input.text().strip()
         prompt = self.prompt_input.text().strip()
+        provider = self.provider_combo.currentText()
         
         if not directory:
             self.show_error("Please select a directory")
@@ -636,9 +677,10 @@ class AISearchGUI(QMainWindow):
             return
         
         # Check for API key
-        if not hasattr(self, 'api_key') or not self.api_key:
-            self.show_error("Please set your Anthropic API key first")
-            self.show_api_key_dialog()
+        api_key = getattr(self, f"{provider}_key", '')
+        if not api_key:
+            self.show_error(f"Please set your {provider.title()} API key first")
+            self.show_api_key_dialog(provider)
             return
         
         # Get extensions
@@ -679,7 +721,8 @@ class AISearchGUI(QMainWindow):
             self.context_lines.value(),
             not self.include_comments.isChecked(),
             self.max_terms.value(),
-            self.max_workers.value()
+            self.max_workers.value(),
+            provider
         )
         self.search_thread.start()
         
@@ -823,16 +866,17 @@ class AISearchGUI(QMainWindow):
         self.search_button.setEnabled(True)
         self.chat_button.setEnabled(True if self.matches else False)
     
-    def show_api_key_dialog(self):
+    def show_api_key_dialog(self, provider):
         """Show dialog to input API key"""
-        current_key = getattr(self, 'api_key', '')
+        current_key = getattr(self, f"{provider}_key", '')
+        title = "Set Anthropic API Key" if provider == "anthropic" else "Set OpenAI API Key"
         
         dialog = QDialog(self)
-        dialog.setWindowTitle("Set Anthropic API Key")
+        dialog.setWindowTitle(title)
         layout = QVBoxLayout(dialog)
         
         # Instructions
-        instructions = QLabel("Enter your Anthropic API key below. The key will be stored locally.")
+        instructions = QLabel(f"Enter your {provider.title()} API key below. The key will be stored locally.")
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
         
@@ -854,23 +898,29 @@ class AISearchGUI(QMainWindow):
         layout.addLayout(button_layout)
         
         # Connect buttons
-        save_btn.clicked.connect(lambda: self.save_api_key(key_input.text(), dialog))
+        save_btn.clicked.connect(lambda: self.save_api_key(provider, key_input.text(), dialog))
         cancel_btn.clicked.connect(dialog.reject)
         
         dialog.exec()
     
-    def save_api_key(self, key, dialog):
+    def save_api_key(self, provider, key, dialog):
         """Save API key and close dialog"""
         if key:
-            self.api_key = key
+            # Save to instance variable
+            setattr(self, f"{provider}_key", key)
             # Set environment variable for immediate use
-            os.environ["ANTHROPIC_API_KEY"] = key
+            os.environ[f"{provider.upper()}_API_KEY"] = key
             self.saveSettings()
             dialog.accept()
-            self.statusBar().showMessage("API Key saved")
+            self.statusBar().showMessage(f"{provider.title()} API Key saved")
         else:
             QMessageBox.warning(dialog, "Error", "API Key cannot be empty")
-
+    
+    def on_provider_changed(self, provider):
+        """Handle provider selection change"""
+        self.settings.setValue("provider", provider)
+        self.saveSettings()
+    
     def open_file_in_editor(self, file_path, line_number):
         """Open a file at a specific line in the default editor"""
         try:
@@ -1012,7 +1062,8 @@ class AISearchGUI(QMainWindow):
             self.context_lines.value(),
             not self.include_comments.isChecked(),
             self.max_terms.value(),
-            self.max_workers.value()
+            self.max_workers.value(),
+            self.provider_combo.currentText()
         )
         self.search_thread.start()
         

@@ -12,6 +12,7 @@ def check_dependencies():
     """Check if required dependencies are installed"""
     try:
         import anthropic
+        import openai
         import tqdm
         gui_available = False
         try:
@@ -23,7 +24,7 @@ def check_dependencies():
     except ImportError as e:
         print(f"Missing dependency: {e}")
         print("Please install required packages:")
-        print("  pip install anthropic tqdm")
+        print("  pip install anthropic openai tqdm")
         print("For GUI support:")
         print("  pip install pyside6")
         return False, False

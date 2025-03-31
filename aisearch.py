@@ -2,6 +2,7 @@ import os
 import re
 import argparse
 import anthropic
+import openai
 import sys
 import concurrent.futures
 from tqdm import tqdm
@@ -9,8 +10,21 @@ from tqdm import tqdm
 # Cache for file lists when directory and extensions don't change
 _file_cache = {}
 
-def get_search_terms_from_prompt(prompt, max_terms=10, extensions=None):
-    client = anthropic.Anthropic()
+def get_ai_client(provider="anthropic"):
+    """Get the appropriate AI client based on provider"""
+    if provider == "anthropic":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError("Anthropic API key not found. Please set ANTHROPIC_API_KEY environment variable.")
+        return anthropic.Anthropic()
+    elif provider == "openai":
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
+        return openai.OpenAI()
+    else:
+        raise ValueError(f"Unsupported AI provider: {provider}")
+
+def get_search_terms_from_prompt(prompt, max_terms=10, extensions=None, provider="anthropic"):
+    client = get_ai_client(provider)
     
     # Map file extensions to languages
     language_map = {
@@ -58,23 +72,35 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
         else:
             extensions_info = f"\nLook specifically in {ext_list} files. Tailor search terms to these file types."
     
-    response = client.messages.create(
-        model="claude-3-7-sonnet-latest",
-        max_tokens=4096,
-        temperature=1,
-        system=system_message,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": 2048
-        },
-        messages=[{
-            "role": "user",
-            "content": f"Generate up to {max_terms} effective regex search patterns for finding: '{prompt}'{extensions_info}"
-        }]
-    )
+    if provider == "anthropic":
+        response = client.messages.create(
+            model="claude-3-7-sonnet-latest",
+            max_tokens=4096,
+            temperature=1,
+            system=system_message,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 2048
+            },
+            messages=[{
+                "role": "user",
+                "content": f"Generate up to {max_terms} effective regex search patterns for finding: '{prompt}'{extensions_info}"
+            }]
+        )
+        raw_text = response.content[1].text.strip()
+    else:  # OpenAI
+        response = client.chat.completions.create(
+            model="o3-mini",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"Generate up to {max_terms} effective regex search patterns for finding: '{prompt}'{extensions_info}"}
+            ],
+            temperature=1,
+            max_completion_tokens=4096
+        )
+        raw_text = response.choices[0].message.content.strip()
     
     # Clean and filter the terms
-    raw_text = response.content[1].text.strip()
     terms = []
     for line in raw_text.splitlines():
         line = line.strip()
@@ -522,10 +548,10 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     return all_matches
 
 
-def chat_about_matches(matches, original_prompt):
-    client = anthropic.Anthropic()
+def chat_about_matches(matches, original_prompt, provider="anthropic"):
+    client = get_ai_client(provider)
     
-    # Prepare a more structured context for Claude
+    # Prepare a more structured context for the AI
     context_sections = []
     for i, m in enumerate(matches[:20]):  # Limit to first 20 matches to avoid token limits
         context_sections.append(f"{m['file']}:{m['line']} (Match #{i+1})\nMatched term: {m['term']}\n{m['context']}")
@@ -558,24 +584,43 @@ Keep your responses concise and to the point."""
 
         history.append({"role": "user", "content": user_input})
         
-        # Use streaming API
-        print("\nClaude: ", end="", flush=True)
-        full_response = ""
-        
-        with client.messages.stream(
-            model="claude-3-7-sonnet-latest",
-            max_tokens=4096,
-            temperature=1,
-            system=system_message,
-            thinking={
-                "type": "enabled",
-                "budget_tokens": 2048
-            },
-            messages=history[-10:]  # Send only the last 10 exchanges
-        ) as stream:
-            for text in stream.text_stream:
-                print(text, end="", flush=True)
-                full_response += text
+        if provider == "anthropic":
+            # Use streaming API for Anthropic
+            print("\nClaude: ", end="", flush=True)
+            full_response = ""
+            
+            with client.messages.stream(
+                model="claude-3-7-sonnet-latest",
+                max_tokens=4096,
+                temperature=1,
+                system=system_message,
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 2048
+                },
+                messages=history[-10:]  # Send only the last 10 exchanges
+            ) as stream:
+                for text in stream.text_stream:
+                    print(text, end="", flush=True)
+                    full_response += text
+        else:  # OpenAI
+            # Use streaming API for OpenAI
+            print("\nGPT-4: ", end="", flush=True)
+            full_response = ""
+            
+            stream = client.chat.completions.create(
+                model="o3-mini",
+                messages=[{"role": "system", "content": system_message}] + history[-10:],
+                temperature=1,
+                max_completion_tokens=4096,
+                stream=True
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    text = chunk.choices[0].delta.content
+                    print(text, end="", flush=True)
+                    full_response += text
         
         print()  # Add a newline after the streamed response
         history.append({"role": "assistant", "content": full_response})
@@ -587,8 +632,8 @@ def clear_file_cache():
     _file_cache.clear()
 
 
-def get_refined_search_terms(prompt, matches, max_terms=10, extensions=None, context_lines=3):
-    client = anthropic.Anthropic()
+def get_refined_search_terms(prompt, matches, max_terms=10, extensions=None, context_lines=3, provider="anthropic"):
+    client = get_ai_client(provider)
     
     # Map file extensions to languages
     language_map = {
@@ -620,7 +665,7 @@ def get_refined_search_terms(prompt, matches, max_terms=10, extensions=None, con
     # Prepare context from current matches
     context_sections = []
     for i, m in enumerate(matches[:10]):  # Use first 10 matches for context
-        # Split context into lines and get the middle line (the matched line)
+        # Split context into lines and get the middle
         context_lines_list = m['context'].split('\n')
         middle_line_index = len(context_lines_list) // 2
         
@@ -659,23 +704,35 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
         else:
             extensions_info = f"\nLook specifically in {ext_list} files. Tailor search terms to these file types."
     
-    response = client.messages.create(
-        model="claude-3-7-sonnet-latest",
-        max_tokens=4096,
-        temperature=1,
-        system=system_message,
-        thinking={
-            "type": "enabled",
-            "budget_tokens": 2048
-        },
-        messages=[{
-            "role": "user",
-            "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"
-        }]
-    )
+    if provider == "anthropic":
+        response = client.messages.create(
+            model="claude-3-7-sonnet-latest",
+            max_tokens=4096,
+            temperature=1,
+            system=system_message,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 2048
+            },
+            messages=[{
+                "role": "user",
+                "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"
+            }]
+        )
+        raw_text = response.content[1].text.strip()
+    else:  # OpenAI
+        response = client.chat.completions.create(
+            model="o3-mini",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"}
+            ],
+            temperature=1,
+            max_completion_tokens=4096
+        )
+        raw_text = response.choices[0].message.content.strip()
     
     # Clean and filter the terms
-    raw_text = response.content[1].text.strip()
     terms = []
     for line in raw_text.splitlines():
         line = line.strip()
@@ -694,28 +751,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Search code and chat with AI about results.")
     parser.add_argument("directory", help="Directory to search in")
     parser.add_argument("--prompt", help="Natural language prompt to generate search terms")
-    parser.add_argument("-e", "--extensions", nargs='+', help="File extensions to include (e.g. .py .js)")
+    parser.add_argument("-e", "--extensions", nargs='+', help="File extensions to include (e.g., .py .js)")
     parser.add_argument("-i", "--insensitive", action="store_true", help="Case-insensitive search")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     parser.add_argument("--no-chat", action="store_true", help="Skip chat mode")
     parser.add_argument("--include-comments", action="store_true", help="Include comments in search results")
-    parser.add_argument("--terms", type=int, default=10, help="Number of search terms to generate (default: 10)")
+    parser.add_argument("--terms", type=int, default=10, help="Number of search terms to generate")
     parser.add_argument("--context", type=int, default=6, help="Lines of context before/after match")
-    parser.add_argument("--workers", type=int, help="Number of parallel workers for search (default: 2x CPU cores)")
-
+    parser.add_argument("--workers", type=int, help="Number of parallel workers")
+    parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic", help="AI provider to use")
     args = parser.parse_args()
-
-    if not args.prompt:
-        print("You must provide a --prompt to suggest search terms.")
-        sys.exit(1)
-
-    print("\nQuerying Claude for search terms...")
-    search_terms = get_search_terms_from_prompt(args.prompt, max_terms=args.terms, extensions=args.extensions)
-    print("Suggested terms:")
-    for t in search_terms:
-        print(f"- {t}")
-
-    print("\nSearching code using regex patterns...")
+    
+    # Get search terms
+    search_terms = get_search_terms_from_prompt(args.prompt, args.terms, args.extensions, args.provider)
+    
+    # Search code
     matches = search_code(
         directory=args.directory,
         search_terms=search_terms,
@@ -726,6 +776,7 @@ if __name__ == "__main__":
         ignore_comments=not args.include_comments,
         max_workers=args.workers
     )
-
-    if matches and not args.no_chat:
-        chat_about_matches(matches, args.prompt)
+    
+    # Chat about results if enabled
+    if not args.no_chat and matches:
+        chat_about_matches(matches, args.prompt, args.provider)
