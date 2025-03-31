@@ -13,6 +13,28 @@ AISearch is a powerful tool that leverages Claude 3.7 Sonnet to generate intelli
 - **Modern UI**: Choose between a sleek GUI or efficient CLI
 - **Code context**: View relevant lines before and after matches
 - **Language filtering**: Focus on specific file types
+- **Smart caching**: Efficient file list caching for faster repeated searches
+- **Comment filtering**: Option to exclude code comments from search
+- **Clickable results**: Open matched files directly in your editor
+- **Search refinement**: AI-powered search term refinement based on initial results
+
+## Supported Languages
+
+AISearch supports a wide range of programming languages including:
+- Python (.py)
+- JavaScript (.js)
+- TypeScript (.ts)
+- React JSX (.jsx)
+- React TSX (.tsx)
+- Java (.java)
+- C/C++ (.c, .cpp)
+- C# (.cs)
+- Go (.go)
+- Ruby (.rb)
+- PHP (.php)
+- Swift (.swift)
+- Kotlin (.kt)
+- Rust (.rs)
 
 ## Quick Start
 
@@ -44,10 +66,14 @@ Use the launcher script to run either the GUI or CLI version:
 ### GUI Version
 
 The graphical interface provides an intuitive way to:
-- Configure search parameters
-- View search results
+- Configure search parameters (case sensitivity, context lines, etc.)
+- View search results with syntax highlighting
 - Chat with Claude about findings
 - Save and manage search sessions
+- Click on results to open files in your editor
+- Refine searches based on initial results
+- Filter by file extensions
+- Exclude comments from search
 
 To launch the GUI directly:
 ```bash
@@ -72,7 +98,7 @@ For detailed CLI documentation, see [CLI Documentation](aisearch_readme.md).
 ## Requirements
 
 - Python 3.7+
-- Anthropic API key
+- Anthropic API key (for Claude 3.7 Sonnet)
 - Dependencies:
   - anthropic
   - tqdm
