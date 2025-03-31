@@ -297,6 +297,13 @@ class AISearchGUI(QMainWindow):
         
         self.toolbar.addSeparator()
         
+        # Add clear cache action
+        clear_cache_action = self.toolbar.addAction("Clear Cache")
+        clear_cache_action.triggered.connect(self.clear_file_cache)
+        clear_cache_action.setToolTip("Clear file list cache to force directory re-scan")
+        
+        self.toolbar.addSeparator()
+        
         self.chat_action = self.toolbar.addAction("Chat")
         self.chat_action.triggered.connect(self.start_chat)
         self.chat_action.setToolTip("Chat about results")
@@ -868,6 +875,11 @@ class AISearchGUI(QMainWindow):
             
             # No need to reset stdout here as that will be done in search_complete
             # when the thread finishes
+
+    def clear_file_cache(self):
+        """Clear the file cache to force directory re-scan on next search"""
+        aisearch.clear_file_cache()
+        self.statusBar().showMessage("File cache cleared")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

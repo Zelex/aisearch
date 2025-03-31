@@ -6,6 +6,9 @@ import sys
 import concurrent.futures
 from tqdm import tqdm
 
+# Cache for file lists when directory and extensions don't change
+_file_cache = {}
+
 def get_search_terms_from_prompt(prompt, max_terms=10, extensions=None):
     client = anthropic.Anthropic()
     
@@ -347,6 +350,10 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     if sys.platform == 'win32' and max_workers > 8:
         max_workers = 8  # Windows handles fewer threads more efficiently
     
+    # Check if we have a cached file list for this directory and extensions
+    cache_key = (os.path.abspath(directory), frozenset(extensions) if extensions else None)
+    cached_files = _file_cache.get(cache_key)
+    
     # Create a ThreadPoolExecutor to search files in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Use a dictionary to track all futures for files being processed
@@ -392,43 +399,20 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
             
             return False
         
-        # Batch files by directory for more efficient processing
-        current_batch = []
-        current_dir = None
-        batch_size = 100  # Adjust based on testing
-        
         try:
-            # Walk the directory tree using fast_walk and submit tasks as we find files
-            for root, dirs, files in fast_walk(directory, skip_dirs):
-                # Check if search should be stopped
-                if stop_requested and stop_requested():
-                    break
+            if cached_files:
+                # Use cached file list if available
+                print(f"Using cached file list ({len(cached_files)} files)")
+                total_files = len(cached_files)
+                pbar.total = total_files
                 
-                # Process files in batches by directory to improve locality
-                file_batch = []
-                
-                for file in files:
+                # Process files from cache
+                for file_info in cached_files:
                     # Check if search should be stopped
                     if stop_requested and stop_requested():
                         break
-                        
-                    # Get extension - more efficient than splitext for extension checking
-                    file_lower = file.lower()
-                    dot_index = file_lower.rfind('.')
                     
-                    if dot_index != -1:
-                        file_ext = file_lower[dot_index:]
-                        # If extensions specified, filter by extension
-                        if extensions and file_ext not in extensions:
-                            continue
-                    elif extensions:
-                        # Skip files without extensions if extensions specified
-                        continue
-                    else:
-                        file_ext = ''
-                    
-                    path = os.path.join(root, file)
-                    total_files += 1
+                    path, file_ext = file_info
                     
                     # Submit the file for processing
                     future = executor.submit(
@@ -447,18 +431,78 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                     futures[future] = path
                     
                     # Periodically process completed futures while we continue searching
-                    # Process more frequently on Windows to avoid memory buildup
-                    if len(futures) > batch_size or (sys.platform == 'win32' and len(futures) > 50):
+                    if len(futures) > 100 or (sys.platform == 'win32' and len(futures) > 50):
                         if process_completed_futures(block=False):
                             break  # Stop requested
-                    
-                    # Update total in progress bar
-                    pbar.total = total_files
-                    pbar.refresh()
+            else:
+                # No cached files, collect them first
+                file_list = []
                 
-                # Process completed futures after each directory to maintain responsiveness
-                if process_completed_futures(block=False):
-                    break  # Stop requested
+                # Walk the directory tree using fast_walk and submit tasks as we find files
+                for root, dirs, files in fast_walk(directory, skip_dirs):
+                    # Check if search should be stopped
+                    if stop_requested and stop_requested():
+                        break
+                    
+                    for file in files:
+                        # Check if search should be stopped
+                        if stop_requested and stop_requested():
+                            break
+                            
+                        # Get extension - more efficient than splitext for extension checking
+                        file_lower = file.lower()
+                        dot_index = file_lower.rfind('.')
+                        
+                        if dot_index != -1:
+                            file_ext = file_lower[dot_index:]
+                            # If extensions specified, filter by extension
+                            if extensions and file_ext not in extensions:
+                                continue
+                        elif extensions:
+                            # Skip files without extensions if extensions specified
+                            continue
+                        else:
+                            file_ext = ''
+                        
+                        path = os.path.join(root, file)
+                        total_files += 1
+                        
+                        # Add to file list for caching
+                        file_list.append((path, file_ext))
+                        
+                        # Submit the file for processing
+                        future = executor.submit(
+                            search_file, 
+                            path, 
+                            file_ext, 
+                            search_terms, 
+                            case_sensitive, 
+                            True,  # Always use regex 
+                            color_output, 
+                            context_lines, 
+                            ignore_comments, 
+                            sanitized_patterns,
+                            compiled_patterns
+                        )
+                        futures[future] = path
+                        
+                        # Periodically process completed futures while we continue searching
+                        # Process more frequently on Windows to avoid memory buildup
+                        if len(futures) > 100 or (sys.platform == 'win32' and len(futures) > 50):
+                            if process_completed_futures(block=False):
+                                break  # Stop requested
+                        
+                        # Update total in progress bar
+                        pbar.total = total_files
+                        pbar.refresh()
+                    
+                    # Process completed futures after each directory to maintain responsiveness
+                    if process_completed_futures(block=False):
+                        break  # Stop requested
+                
+                # Cache the file list for future searches if not stopped
+                if not (stop_requested and stop_requested()):
+                    _file_cache[cache_key] = file_list
             
             # Process all remaining futures if not stopped
             if not (stop_requested and stop_requested()):
@@ -535,6 +579,12 @@ Keep your responses concise and to the point."""
         
         print()  # Add a newline after the streamed response
         history.append({"role": "assistant", "content": full_response})
+
+
+def clear_file_cache():
+    """Clear the file list cache."""
+    global _file_cache
+    _file_cache.clear()
 
 
 if __name__ == "__main__":
