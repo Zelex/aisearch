@@ -214,11 +214,85 @@ class ClickableTextEdit(QTextEdit):
         self.setReadOnly(True)
         self.setMouseTracking(True)
         self.setCursorWidth(1)
-        # Enhanced pattern to match more file reference formats, including Windows paths with \\?\ prefix
-        self.file_match_pattern = re.compile(r'(?:\\\?\\?)?([A-Za-z]:\\[\/\\\w\.-]+(?:\.[a-zA-Z0-9]+)?):(\d+)')
+        # Use a simpler pattern to match line numbers and delegate more complex path validation to a method
+        self.file_match_pattern = re.compile(r'([^:]+):(\d+)')
         # Remove text selection flags to prevent automatic selection
         self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.setStatusTip("Click on file:line references to open in your default editor")
+    
+    @staticmethod
+    def is_valid_file_path(path):
+        """Validate if a path looks like a legitimate file path across platforms"""
+        # Windows extended path (\\?\) validation - must have valid structure
+        if path.startswith('\\\\?\\'):
+            # Check for drive letter (e.g., C:)
+            if len(path) > 4 and path[4].isalpha() and path[5] == ':':
+                pass  # Valid Windows drive path
+            # Check for UNC path
+            elif len(path) > 5 and path[4:8] == 'UNC\\':
+                pass  # Valid UNC path
+            else:
+                return False
+        # Either must start with a path separator or have a drive letter
+        elif not (path.startswith('/') or path.startswith('\\') or
+                 path.startswith('./') or path.startswith('../') or
+                 re.match(r'[A-Za-z]:', path)):
+            return False
+        # Path must have at least one path separator
+        if '/' not in path and '\\' not in path:
+            return False
+        return True
+    
+    @staticmethod
+    def test_file_pattern():
+        """Test the file pattern matching with various path formats"""
+        test_cases = [
+            # Windows paths
+            ("C:\\path\\to\\file.py:123", True),
+            ("D:/path/to/file.py:123", True),
+            ("C:\\Program Files\\App\\file.txt:456", True),
+            
+            # Windows \\?\ prefixed paths
+            ("\\\\?\\C:\\path\\to\\file.py:123", True),
+            ("\\\\?\\D:/path/to/file.py:123", True),
+            ("\\\\?\\C:\\Program Files\\App\\file.txt:456", True),
+            ("\\\\?\\UNC\\server\\share\\file.py:123", True),
+            
+            # Unix/Mac paths
+            ("/path/to/file.py:123", True),
+            ("/home/user/project/file.js:789", True),
+            ("/usr/local/bin/script.sh:42", True),
+            
+            # Relative paths
+            ("./file.py:123", True),
+            ("../file.py:123", True),
+            ("../../project/file.py:123", True),
+            
+            # Edge cases
+            ("file.py:123", False),  # No path separator
+            ("C:file.py:123", False),  # Missing path separator after drive
+            ("/file.py", False),  # No line number
+            ("file.py", False),  # No line number
+            ("C:\\path\\file", False),  # No line number
+            ("/path/file", False),  # No line number
+            ("\\\\?\\file.py:123", False),  # \\?\ without drive letter
+            ("\\\\?\\C:file.py:123", False),  # \\?\ with missing path separator
+        ]
+        
+        print("\nTesting file pattern matching:")
+        print("-" * 50)
+        pattern = re.compile(r'([^:]+):(\d+)')
+        
+        for test_path, expected in test_cases:
+            match = pattern.search(test_path)
+            if match:
+                path = match.group(1)
+                result = ClickableTextEdit.is_valid_file_path(path)
+            else:
+                result = False
+            
+            status = "✓" if result == expected else "✗"
+            print(f"{status} {test_path:<40} Expected: {expected}, Got: {result}")
     
     def find_main_window(self):
         """Find the main window by traversing up the parent hierarchy"""
@@ -236,7 +310,8 @@ class ClickableTextEdit(QTextEdit):
         line_text = cursor.selectedText()
         
         # Check if cursor is on file:line pattern
-        if self.file_match_pattern.search(line_text):
+        match = self.file_match_pattern.search(line_text)
+        if match and self.is_valid_file_path(match.group(1)):
             self.viewport().setCursor(Qt.PointingHandCursor)
         else:
             self.viewport().setCursor(Qt.IBeamCursor)
@@ -253,7 +328,7 @@ class ClickableTextEdit(QTextEdit):
             
             # Look for file:line pattern
             match = self.file_match_pattern.search(line_text)
-            if match:
+            if match and self.is_valid_file_path(match.group(1)):
                 file_path = match.group(1)
                 line_number = match.group(2)
                 
@@ -1073,6 +1148,9 @@ class AISearchGUI(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # Modern look and feel
+    
+    # Test the file pattern matching
+    #ClickableTextEdit.test_file_pattern()
     
     # Set application icon if available
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aisearch_icon.png")
