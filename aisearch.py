@@ -587,6 +587,109 @@ def clear_file_cache():
     _file_cache.clear()
 
 
+def get_refined_search_terms(prompt, matches, max_terms=10, extensions=None, context_lines=3):
+    client = anthropic.Anthropic()
+    
+    # Map file extensions to languages
+    language_map = {
+        '.py': 'Python',
+        '.js': 'JavaScript',
+        '.ts': 'TypeScript',
+        '.jsx': 'React JSX',
+        '.tsx': 'React TSX',
+        '.java': 'Java',
+        '.c': 'C',
+        '.cpp': 'C++',
+        '.cs': 'C#',
+        '.go': 'Go',
+        '.rb': 'Ruby',
+        '.php': 'PHP',
+        '.swift': 'Swift',
+        '.kt': 'Kotlin',
+        '.rs': 'Rust'
+    }
+    
+    # Convert extensions to languages if recognized
+    languages = []
+    if extensions:
+        for ext in extensions:
+            ext = ext if ext.startswith('.') else f'.{ext}'
+            if ext in language_map:
+                languages.append(language_map[ext])
+    
+    # Prepare context from current matches
+    context_sections = []
+    for i, m in enumerate(matches[:10]):  # Use first 10 matches for context
+        # Split context into lines and get the middle line (the matched line)
+        context_lines_list = m['context'].split('\n')
+        middle_line_index = len(context_lines_list) // 2
+        
+        # Add file and line info
+        context_sections.append(f"File: {m['file']}\nLine: {m['line']}\nMatched term: {m['term']}")
+        
+        # Add context with the matched line highlighted
+        context_sections.append("Context:")
+        for j, line in enumerate(context_lines_list):
+            if j == middle_line_index:
+                context_sections.append(f">>> {line}")  # Highlight the matched line
+            else:
+                context_sections.append(f"    {line}")
+    
+    combined_contexts = "\n".join(context_sections)
+    
+    # Improved system prompt for refined search terms
+    system_message = """You are a code search expert. Analyze the provided code matches and generate refined search terms.
+Focus on:
+1. Patterns that appear in successful matches
+2. Related code patterns that might be relevant
+3. Language-specific syntax patterns
+4. Practical regex patterns that can be used with Python's re module
+
+Keep your response VERY brief - just list the search terms, one per line.
+Respond with ONLY the search terms, with no additional text, explanations, or numbering.
+"""
+    
+    # Format language/extension info for the prompt
+    extensions_info = ""
+    if extensions:
+        ext_list = ', '.join(extensions)
+        if languages:
+            lang_list = ', '.join(languages)
+            extensions_info = f"\nLook specifically in {ext_list} files ({lang_list}). Tailor search terms to these languages using their specific syntax patterns."
+        else:
+            extensions_info = f"\nLook specifically in {ext_list} files. Tailor search terms to these file types."
+    
+    response = client.messages.create(
+        model="claude-3-7-sonnet-latest",
+        max_tokens=4096,
+        temperature=1,
+        system=system_message,
+        thinking={
+            "type": "enabled",
+            "budget_tokens": 2048
+        },
+        messages=[{
+            "role": "user",
+            "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"
+        }]
+    )
+    
+    # Clean and filter the terms
+    raw_text = response.content[1].text.strip()
+    terms = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        # Skip empty lines or lines that look like explanations/headers
+        if not line or line.startswith('#') or line.startswith('-') or len(line) > 60:
+            continue
+        # Remove any prefix numbering (1., 2., etc.)
+        line = re.sub(r'^\d+[\.\)]\s*', '', line)
+        if line:
+            terms.append(line)
+    
+    return terms[:max_terms]  # Ensure we don't exceed max_terms
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Search code and chat with AI about results.")
     parser.add_argument("directory", help="Directory to search in")

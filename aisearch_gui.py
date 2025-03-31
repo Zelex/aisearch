@@ -74,10 +74,23 @@ class SearchThread(threading.Thread):
                 return
                 
             self.parent.signal_update_status.emit("Querying Claude for search terms...")
-            self.search_terms = aisearch.get_search_terms_from_prompt(
-                self.prompt, 
-                max_terms=self.max_terms, 
-                extensions=self.extensions)
+            
+            # Check if this is a refined search (we have previous matches)
+            if hasattr(self.parent, 'matches') and self.parent.matches:
+                self.search_terms = aisearch.get_refined_search_terms(
+                    self.prompt,
+                    self.parent.matches,
+                    max_terms=self.max_terms,
+                    extensions=self.extensions,
+                    context_lines=self.context_lines
+                )
+                self.parent.signal_update_status.emit("Generated refined search terms based on current results...")
+            else:
+                self.search_terms = aisearch.get_search_terms_from_prompt(
+                    self.prompt,
+                    max_terms=self.max_terms,
+                    extensions=self.extensions
+                )
             
             # Display terms
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
@@ -92,7 +105,7 @@ class SearchThread(threading.Thread):
             
             # Process in batches
             all_matches = []
-            MAX_RESULTS = 100  # Hard limit on results
+            MAX_RESULTS = 100
             
             try:
                 all_matches = aisearch.search_code(
@@ -371,8 +384,9 @@ class AISearchGUI(QMainWindow):
         # Options layout
         options_layout = QHBoxLayout()
         
-        # Left options
+        # Left options (checkboxes)
         left_options = QVBoxLayout()
+        left_options.setSpacing(5)  # Reduce spacing between checkboxes
         self.case_sensitive = QCheckBox("Case Sensitive")
         self.case_sensitive.setChecked(True)
         left_options.addWidget(self.case_sensitive)
@@ -381,38 +395,71 @@ class AISearchGUI(QMainWindow):
         left_options.addWidget(self.include_comments)
         options_layout.addLayout(left_options)
         
-        # Middle options
+        # Add some spacing between option groups
+        options_layout.addSpacing(20)
+        
+        # Middle options (terms and workers)
         middle_options = QVBoxLayout()
+        middle_options.setSpacing(5)  # Reduce spacing between rows
+        
+        # Terms row
         terms_layout = QHBoxLayout()
+        terms_layout.setSpacing(5)  # Reduce spacing between label and spinbox
         terms_layout.addWidget(QLabel("Max Terms:"))
         self.max_terms = QSpinBox()
-        self.max_terms.setRange(1, 100)  # Increased max
+        self.max_terms.setRange(1, 100)
         self.max_terms.setValue(8)
+        self.max_terms.setMinimumWidth(60)  # Make spinbox wider
         terms_layout.addWidget(self.max_terms)
         middle_options.addLayout(terms_layout)
         
+        # Workers row
         workers_layout = QHBoxLayout()
+        workers_layout.setSpacing(5)  # Reduce spacing between label and spinbox
         workers_layout.addWidget(QLabel("Workers:"))
         self.max_workers = QSpinBox()
-        self.max_workers.setRange(1, 64)  # Increased max workers
+        self.max_workers.setRange(1, 64)
         self.max_workers.setValue(4)
+        self.max_workers.setMinimumWidth(60)  # Make spinbox wider
         workers_layout.addWidget(self.max_workers)
         middle_options.addLayout(workers_layout)
+        
         options_layout.addLayout(middle_options)
         
-        # Right options
+        # Add some spacing between option groups
+        options_layout.addSpacing(20)
+        
+        # Right options (context lines and buttons)
         right_options = QVBoxLayout()
+        right_options.setSpacing(5)  # Reduce spacing between rows
+        
+        # Context lines row
         context_layout = QHBoxLayout()
+        context_layout.setSpacing(5)  # Reduce spacing between label and spinbox
         context_layout.addWidget(QLabel("Context Lines:"))
         self.context_lines = QSpinBox()
-        self.context_lines.setRange(0, 20)  # Increased max context lines
+        self.context_lines.setRange(0, 20)
         self.context_lines.setValue(2)
+        self.context_lines.setMinimumWidth(60)  # Make spinbox wider
         context_layout.addWidget(self.context_lines)
         right_options.addLayout(context_layout)
         
+        # Search buttons row
+        search_buttons_layout = QHBoxLayout()
+        search_buttons_layout.setSpacing(5)  # Reduce spacing between buttons
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self.start_search)
-        right_options.addWidget(self.search_button)
+        self.search_button.setMinimumWidth(80)  # Make button wider
+        search_buttons_layout.addWidget(self.search_button)
+        
+        self.refine_button = QPushButton("Refine Search")
+        self.refine_button.clicked.connect(self.refine_search)
+        self.refine_button.setToolTip("Refine search based on current results")
+        self.refine_button.setEnabled(False)
+        self.refine_button.setMinimumWidth(80)  # Make button wider
+        search_buttons_layout.addWidget(self.refine_button)
+        
+        right_options.addLayout(search_buttons_layout)
         options_layout.addLayout(right_options)
         
         config_layout.addLayout(options_layout)
@@ -722,10 +769,12 @@ class AISearchGUI(QMainWindow):
         if match_count > 0:
             self.chat_button.setEnabled(True)
             self.chat_action.setEnabled(True)
+            self.refine_button.setEnabled(True)  # Enable refine button when we have results
             self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
         else:
             self.chat_button.setEnabled(False)
             self.chat_action.setEnabled(False)
+            self.refine_button.setEnabled(False)  # Disable refine button when no results
             self.statusBar().showMessage("Search complete. No matches found.")
             
         # Clear reference to search thread
@@ -740,6 +789,7 @@ class AISearchGUI(QMainWindow):
         self.matches = []
         self.chat_button.setEnabled(False)
         self.chat_action.setEnabled(False)
+        self.refine_button.setEnabled(False)  # Disable refine button when clearing
         self.statusBar().showMessage("Results cleared")
     
     def start_chat(self):
@@ -921,6 +971,53 @@ class AISearchGUI(QMainWindow):
         """Clear the file cache to force directory re-scan on next search"""
         aisearch.clear_file_cache()
         self.statusBar().showMessage("File cache cleared")
+
+    def refine_search(self):
+        """Refine the search based on current results"""
+        if not self.matches:
+            self.show_error("No search results to refine from")
+            return
+            
+        # Get current search parameters
+        directory = self.dir_input.text().strip()
+        prompt = self.prompt_input.text().strip()
+        extensions_text = self.ext_input.text().strip()
+        extensions = extensions_text.split() if extensions_text else None
+        
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.search_button.setEnabled(False)
+        self.refine_button.setEnabled(False)
+        self.stop_action.setEnabled(True)
+        
+        # Reset the results buffer
+        self.results_buffer = ResultsBuffer()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Redirect stdout to results buffer
+        self.original_stdout = sys.stdout
+        sys.stdout = StreamRedirector(self.results_buffer)
+        
+        # Start search thread with refined terms
+        self.search_thread = SearchThread(
+            self,
+            directory,
+            prompt,
+            extensions,
+            self.case_sensitive.isChecked(),
+            False,  # color_output (we handle this differently in GUI)
+            self.context_lines.value(),
+            not self.include_comments.isChecked(),
+            self.max_terms.value(),
+            self.max_workers.value()
+        )
+        self.search_thread.start()
+        
+        # Start the update timer to periodically process the buffer
+        self.update_timer.start(250)  # Update UI every 250ms
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
