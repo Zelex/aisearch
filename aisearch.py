@@ -363,6 +363,10 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     all_matches = []
     total_files = 0
     processed_files = 0
+    # Track displayed file:line combinations to avoid duplicates
+    displayed_locations = set()
+    # Map to store unique matches by location (file:line)
+    unique_matches = {}
 
     # Skip common non-source directories
     skip_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'build', 'dist', 'obj', 'bin'}
@@ -410,10 +414,15 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
                     try:
                         file_matches = future.result()
                         if file_matches:
-                            all_matches.extend(file_matches)
-                            # Display matches immediately
+                            # Process matches and deduplicate
                             for match in file_matches:
-                                print(f"{match['file']}:{match['line']}: {match['highlighted']}")
+                                location = f"{match['file']}:{match['line']}"
+                                # If we haven't seen this location before or if this match has a different term
+                                if location not in displayed_locations:
+                                    displayed_locations.add(location)
+                                    # Store this as the unique match for this location
+                                    unique_matches[location] = match
+                                    print(f"{location}: {match['highlighted']}")
                     except Exception as e:
                         print(f"Error processing {file_path}: {e}", file=sys.stderr)
                     finally:
@@ -541,10 +550,13 @@ def search_code(directory, search_terms, extensions=None, case_sensitive=False,
     for term, sanitized_term in sanitized_patterns.items():
         print(f"Warning: Fixed problematic regex pattern: '{term}' → '{sanitized_term}'")
     
+    # Convert unique_matches map to list
+    all_matches = list(unique_matches.values())
+    
     if stop_requested and stop_requested():
-        print(f"\nSearch stopped. Processed {processed_files} files, found {len(all_matches)} matches")
+        print(f"\nSearch stopped. Processed {processed_files} files, found {len(all_matches)} unique matches")
     else:
-        print(f"\nProcessed {processed_files} files, found {len(all_matches)} matches")
+        print(f"\nProcessed {processed_files} files, found {len(all_matches)} unique matches")
     return all_matches
 
 
