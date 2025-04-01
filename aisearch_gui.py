@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
                              QListWidget, QProgressBar, QMessageBox, QDialog)
 from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer
-from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat
+from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat, QSyntaxHighlighter
 
 import aisearch
 
@@ -207,6 +207,221 @@ class ChatThread(threading.Thread):
         except Exception as e:
             self.parent.signal_error.emit(str(e))
 
+class CodeSyntaxHighlighter(QSyntaxHighlighter):
+    """Syntax highlighter for code snippets that adjusts based on file extension"""
+    def __init__(self, document=None):
+        super().__init__(document)
+        self.highlighting_rules = []
+        
+        # Default to Python highlighting
+        self.current_language = "py"
+        self.setup_highlighting_rules()
+    
+    def set_language(self, file_path):
+        """Set the language based on file extension"""
+        if not file_path:
+            return
+            
+        # Extract extension
+        _, ext = os.path.splitext(file_path)
+        if ext:
+            ext = ext[1:].lower()  # Remove the dot and convert to lowercase
+            
+            # Map common extensions to language types
+            ext_to_lang = {
+                # Python
+                "py": "py", "pyw": "py", "pyx": "py", "pxd": "py", "pxi": "py",
+                # JavaScript
+                "js": "js", "jsx": "js", "ts": "js", "tsx": "js",
+                # HTML/XML
+                "html": "html", "htm": "html", "xhtml": "html", "xml": "html",
+                # CSS
+                "css": "css", "scss": "css", "sass": "css",
+                # C/C++
+                "c": "c", "cpp": "c", "cxx": "c", "h": "c", "hpp": "c",
+                # Java
+                "java": "java",
+                # JSON
+                "json": "json",
+                # Go
+                "go": "go",
+                # Rust
+                "rs": "rust",
+                # Ruby
+                "rb": "ruby",
+                # PHP
+                "php": "php",
+                # Swift
+                "swift": "swift",
+                # C#
+                "cs": "csharp",
+                # Shell
+                "sh": "shell", "bash": "shell", "zsh": "shell",
+            }
+            
+            if ext in ext_to_lang:
+                if self.current_language != ext_to_lang[ext]:
+                    self.current_language = ext_to_lang[ext]
+                    self.setup_highlighting_rules()
+                    return True
+        
+        return False
+    
+    def setup_highlighting_rules(self):
+        """Set up highlighting rules based on current language"""
+        self.highlighting_rules = []
+        
+        # Comment format (common for most languages)
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor("#6A9955"))  # Green
+        
+        # String format (common for most languages)
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor("#CE9178"))  # Orange/brown
+        
+        # Keyword format
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor("#569CD6"))  # Blue
+        keyword_format.setFontWeight(QFont.Bold)
+        
+        # Function call format
+        function_format = QTextCharFormat()
+        function_format.setForeground(QColor("#DCDCAA"))  # Yellow
+        
+        # Number format
+        number_format = QTextCharFormat()
+        number_format.setForeground(QColor("#B5CEA8"))  # Light green
+        
+        # Basic number regex (works for most languages)
+        rule = {"pattern": re.compile(r"\b[0-9]+(\.[0-9]+)?\b"), "format": number_format}
+        self.highlighting_rules.append(rule)
+        
+        # Function calls (works for most languages)
+        rule = {"pattern": re.compile(r"\b[A-Za-z0-9_]+(?=\s*\()"), "format": function_format}
+        self.highlighting_rules.append(rule)
+        
+        # Language-specific rules
+        if self.current_language == "py":
+            # Python rules
+            
+            # Keywords
+            python_keywords = [
+                r"\bdef\b", r"\bclass\b", r"\blambda\b", r"\bimport\b", r"\bfrom\b", r"\bas\b",
+                r"\breturn\b", r"\bpass\b", r"\byield\b", r"\bbreak\b", r"\bcontinue\b", 
+                r"\bif\b", r"\belif\b", r"\belse\b", r"\bfor\b", r"\bin\b", r"\bwhile\b",
+                r"\btry\b", r"\bexcept\b", r"\bfinally\b", r"\braise\b", r"\bwith\b",
+                r"\bglobal\b", r"\bnonlocal\b", r"\basync\b", r"\bawait\b", r"\bTrue\b", 
+                r"\bFalse\b", r"\bNone\b", r"\band\b", r"\bor\b", r"\bnot\b", r"\bis\b"
+            ]
+            
+            for pattern in python_keywords:
+                self.highlighting_rules.append({"pattern": re.compile(pattern), "format": keyword_format})
+            
+            # Python comments
+            self.highlighting_rules.append({"pattern": re.compile(r"#[^\n]*"), "format": comment_format})
+            
+            # Python strings (single, double, triple quotes)
+            self.highlighting_rules.append({"pattern": re.compile(r'"[^"\\]*(\\.[^"\\]*)*"'), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"'[^'\\]*(\\.[^'\\]*)*'"), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r'""".*?"""', re.DOTALL), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"'''.*?'''", re.DOTALL), "format": string_format})
+            
+        elif self.current_language == "js":
+            # JavaScript rules
+            
+            # Keywords
+            js_keywords = [
+                r"\bvar\b", r"\blet\b", r"\bconst\b", r"\bfunction\b", r"\breturn\b", 
+                r"\bif\b", r"\belse\b", r"\bfor\b", r"\bwhile\b", r"\bdo\b", r"\bswitch\b", 
+                r"\bcase\b", r"\bdefault\b", r"\btry\b", r"\bcatch\b", r"\bfinally\b", 
+                r"\bthrow\b", r"\bnew\b", r"\bdelete\b", r"\btypeof\b", r"\binstanceof\b", 
+                r"\bclass\b", r"\bextends\b", r"\bsuper\b", r"\bimport\b", r"\bexport\b", 
+                r"\bfrom\b", r"\bas\b", r"\basync\b", r"\bawait\b", r"\bbreak\b", 
+                r"\bcontinue\b", r"\bdebugger\b", r"\bwith\b", r"\bin\b", r"\bof\b",
+                r"\btrue\b", r"\bfalse\b", r"\bnull\b", r"\bundefined\b", r"\bvoid\b"
+            ]
+            
+            for pattern in js_keywords:
+                self.highlighting_rules.append({"pattern": re.compile(pattern), "format": keyword_format})
+            
+            # JavaScript comments (single line and multi-line)
+            self.highlighting_rules.append({"pattern": re.compile(r"//[^\n]*"), "format": comment_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"/\*.*?\*/", re.DOTALL), "format": comment_format})
+            
+            # JavaScript strings
+            self.highlighting_rules.append({"pattern": re.compile(r'"[^"\\]*(\\.[^"\\]*)*"'), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"'[^'\\]*(\\.[^'\\]*)*'"), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"`[^`\\]*(\\.[^`\\]*)*`"), "format": string_format})
+            
+        elif self.current_language == "c":
+            # C/C++ rules
+            
+            # Keywords
+            c_keywords = [
+                r"\bint\b", r"\bchar\b", r"\bvoid\b", r"\bfloat\b", r"\bdouble\b", r"\bshort\b", 
+                r"\blong\b", r"\bsigned\b", r"\bunsigned\b", r"\bstruct\b", r"\bunion\b", 
+                r"\benum\b", r"\bconst\b", r"\bstatic\b", r"\bvolatile\b", r"\bextern\b", 
+                r"\bauto\b", r"\bregister\b", r"\breturn\b", r"\bif\b", r"\belse\b", 
+                r"\bfor\b", r"\bwhile\b", r"\bdo\b", r"\bswitch\b", r"\bcase\b", 
+                r"\bdefault\b", r"\bbreak\b", r"\bcontinue\b", r"\bgoto\b", r"\btypedef\b",
+                r"\bsizeof\b", r"\bnull\b", r"\bclass\b", r"\bprivate\b", r"\bprotected\b", 
+                r"\bpublic\b", r"\btemplate\b", r"\bnamespace\b", r"\busing\b", r"\bnew\b", 
+                r"\bdelete\b", r"\btry\b", r"\bcatch\b", r"\bthrow\b"
+            ]
+            
+            for pattern in c_keywords:
+                self.highlighting_rules.append({"pattern": re.compile(pattern), "format": keyword_format})
+            
+            # C/C++ comments
+            self.highlighting_rules.append({"pattern": re.compile(r"//[^\n]*"), "format": comment_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"/\*.*?\*/", re.DOTALL), "format": comment_format})
+            
+            # C/C++ strings
+            self.highlighting_rules.append({"pattern": re.compile(r'"[^"\\]*(\\.[^"\\]*)*"'), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"'[^'\\]*(\\.[^'\\]*)*'"), "format": string_format})
+            
+        elif self.current_language == "html":
+            # HTML rules
+            
+            # Tags
+            tag_format = QTextCharFormat()
+            tag_format.setForeground(QColor("#569CD6"))  # Blue
+            self.highlighting_rules.append({"pattern": re.compile(r"<[!?]?[a-zA-Z0-9_:-]+"), "format": tag_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"</[a-zA-Z0-9_:-]+>"), "format": tag_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"[/?]?>"), "format": tag_format})
+            
+            # Attributes
+            attr_format = QTextCharFormat()
+            attr_format.setForeground(QColor("#9CDCFE"))  # Light blue
+            self.highlighting_rules.append({"pattern": re.compile(r'\b[a-zA-Z0-9_:-]+(?=\s*=\s*["\'])'), "format": attr_format})
+            
+            # HTML strings
+            self.highlighting_rules.append({"pattern": re.compile(r'"[^"\\]*(\\.[^"\\]*)*"'), "format": string_format})
+            self.highlighting_rules.append({"pattern": re.compile(r"'[^'\\]*(\\.[^'\\]*)*'"), "format": string_format})
+            
+            # HTML comments
+            self.highlighting_rules.append({"pattern": re.compile(r"<!--.*?-->", re.DOTALL), "format": comment_format})
+        
+        # Add more languages as needed
+        # The basic patterns (numbers, functions) are already added for all languages
+
+    def highlightBlock(self, text):
+        """Apply syntax highlighting to text block"""
+        # Detect language from the file extension in the text
+        # Look for file paths in the text block (typical format in search results)
+        file_match = re.search(r'([^:]+\.[a-zA-Z0-9]+):', text)
+        if file_match:
+            file_path = file_match.group(1)
+            self.set_language(file_path)
+            
+        # Apply all rules
+        for rule in self.highlighting_rules:
+            matches = rule["pattern"].finditer(text)
+            for match in matches:
+                start = match.start()
+                length = match.end() - start
+                self.setFormat(start, length, rule["format"])
+
 class ClickableTextEdit(QTextEdit):
     """Custom QTextEdit that can detect clicks on file references"""
     def __init__(self, parent=None):
@@ -219,6 +434,9 @@ class ClickableTextEdit(QTextEdit):
         # Remove text selection flags to prevent automatic selection
         self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.setStatusTip("Click on file:line references to open in your default editor")
+        
+        # Add syntax highlighter
+        self.highlighter = CodeSyntaxHighlighter(self.document())
     
     @staticmethod
     def is_valid_file_path(path):
