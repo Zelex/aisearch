@@ -711,12 +711,11 @@ class AISearchGUI(QMainWindow):
         if hasattr(self, 'update_timer') and self.update_timer.isActive():
             self.update_timer.stop()
         
-        # Stop any running threads
-        if hasattr(self, 'search_thread') and self.search_thread is not None:
-            # The thread might be accessing multiprocessing resources
+        # Clear references to threads
+        if hasattr(self, 'search_thread'):
             self.search_thread = None
         
-        if hasattr(self, 'chat_thread') and self.chat_thread is not None:
+        if hasattr(self, 'chat_thread'):
             self.chat_thread = None
         
         # Force garbage collection
@@ -727,8 +726,11 @@ class AISearchGUI(QMainWindow):
             import multiprocessing as mp
             if hasattr(mp, 'active_children'):
                 for child in mp.active_children():
-                    child.terminate()
-                    child.join(0.1)
+                    try:
+                        child.terminate()
+                        child.join(0.1)
+                    except:
+                        pass
         except:
             pass
     
@@ -737,33 +739,34 @@ class AISearchGUI(QMainWindow):
         if directory:
             self.dir_input.setText(directory)
     
-    def start_search(self):
-        # Validate inputs
+    def _prepare_search(self, is_refine=False):
+        """Common setup for both search and refine search operations"""
         directory = self.dir_input.text().strip()
         prompt = self.prompt_input.text().strip()
         provider = self.provider_combo.currentText()
         
         if not directory:
             self.show_error("Please select a directory")
-            return
+            return False
         
         if not prompt:
             self.show_error("Please enter a search prompt")
-            return
+            return False
         
         # Check for API key
         api_key = getattr(self, f"{provider}_key", '')
         if not api_key:
             self.show_error(f"Please set your {provider.title()} API key first")
             self.show_api_key_dialog(provider)
-            return
+            return False
         
         # Get extensions
         extensions_text = self.ext_input.text().strip()
         extensions = extensions_text.split() if extensions_text else None
         
         # Clear previous results - more aggressive memory cleanup
-        self.results_text.clear()
+        if not is_refine:
+            self.results_text.clear()
         self.chat_output.clear()
         self.chat_input.clear()
         self.chat_button.setEnabled(False)
@@ -772,13 +775,14 @@ class AISearchGUI(QMainWindow):
         self.results_buffer = ResultsBuffer()
         
         # Force garbage collection
-        self.matches = []
-        import gc
+        if not is_refine:
+            self.matches = []
         gc.collect()
         
         # Show progress
         self.progress_bar.setVisible(True)
         self.search_button.setEnabled(False)
+        self.refine_button.setEnabled(False)
         self.stop_action.setEnabled(True)
         
         # Redirect stdout to results buffer
@@ -804,6 +808,19 @@ class AISearchGUI(QMainWindow):
         # Start the update timer to periodically process the buffer
         self.update_timer.start(250)  # Update UI every 250ms
         
+        return True
+
+    def start_search(self):
+        self._prepare_search(is_refine=False)
+        
+    def refine_search(self):
+        """Refine the search based on current results"""
+        if not self.matches:
+            self.show_error("No search results to refine from")
+            return
+            
+        self._prepare_search(is_refine=True)
+    
     def process_results_buffer(self):
         """Process accumulated results from the buffer and update UI"""
         if not hasattr(self, 'search_thread') or self.search_thread is None:
@@ -812,35 +829,27 @@ class AISearchGUI(QMainWindow):
             
         # Get buffered content
         buffered_text = self.results_buffer.get_and_clear()
-        if buffered_text:
-            # Check if text widget is getting too large
-            if self.results_text.document().characterCount() > 1000000:  # ~1MB text limit
-                # Truncate the text to prevent memory issues
-                cursor = self.results_text.textCursor()
-                cursor.movePosition(QTextCursor.Start)
-                cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
-                cursor.removeSelectedText()
-                self.results_text.insertPlainText("[...truncated to prevent memory issues...]\n\n")
+        if not buffered_text:
+            return
             
-            # Append new text
+        # Check if text widget is getting too large
+        if self.results_text.document().characterCount() > 1000000:  # ~1MB text limit
+            # Truncate the text to prevent memory issues
             cursor = self.results_text.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(buffered_text)
-            self.results_text.setTextCursor(cursor)
-            self.results_text.ensureCursorVisible()
+            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, 200000)  # Remove ~200K chars
+            cursor.removeSelectedText()
+            self.results_text.insertPlainText("[...truncated to prevent memory issues...]\n\n")
         
-        # Check if search is still running
+        # Append new text
+        cursor = self.results_text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(buffered_text)
+        self.results_text.setTextCursor(cursor)
+        self.results_text.ensureCursorVisible()
+        
+        # Check if search is finished
         if hasattr(self, 'search_thread') and self.search_thread and not self.search_thread.running:
-            # Final update to make sure we catch everything
-            buffered_text = self.results_buffer.get_and_clear()
-            if buffered_text:
-                cursor = self.results_text.textCursor()
-                cursor.movePosition(QTextCursor.End)
-                cursor.insertText(buffered_text)
-                self.results_text.setTextCursor(cursor)
-                self.results_text.ensureCursorVisible()
-            
-            # Stop the timer
             self.update_timer.stop()
         
     @Slot(str)
@@ -1002,75 +1011,62 @@ class AISearchGUI(QMainWindow):
             system = platform.system()
             line_num = int(line_number)
             
-            if system == "Darwin":  # macOS
-                # Try to use Visual Studio Code if available
-                if os.path.exists("/Applications/Visual Studio Code.app"):
-                    subprocess.run(["open", "-a", "Visual Studio Code", "--args", "-g", f"{file_path}:{line_num}"])
-                # Try to use Sublime Text if available
-                elif os.path.exists("/Applications/Sublime Text.app"):
-                    subprocess.run(["open", "-a", "Sublime Text", "--args", f"{file_path}:{line_num}"])
-                else:
-                    subprocess.run(["open", "-a", "TextEdit", file_path])
-                
-                self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
-                
-            elif system == "Windows":
-                # Try to use VSCode if installed (check multiple possible locations)
-                vscode_paths = [
-                    os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"),
-                    os.path.expandvars("%PROGRAMFILES%\\Microsoft VS Code\\Code.exe"),
-                    os.path.expandvars("%USERPROFILE%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe")
-                ]
-                
-                vscode_found = False
-                for vscode_path in vscode_paths:
-                    if os.path.exists(vscode_path):
-                        subprocess.run([vscode_path, "-g", f"{file_path}:{line_num}"])
-                        vscode_found = True
-                        break
-                
-                if not vscode_found:
-                    # Try Notepad++ if installed (check multiple possible locations)
-                    notepadpp_paths = [
+            editors_by_platform = {
+                "Darwin": [  # macOS
+                    (lambda: os.path.exists("/Applications/Visual Studio Code.app"), 
+                     lambda: subprocess.run(["open", "-a", "Visual Studio Code", "--args", "-g", f"{file_path}:{line_num}"])),
+                    (lambda: os.path.exists("/Applications/Sublime Text.app"), 
+                     lambda: subprocess.run(["open", "-a", "Sublime Text", "--args", f"{file_path}:{line_num}"])),
+                    (lambda: True,  # Fallback to TextEdit
+                     lambda: subprocess.run(["open", "-a", "TextEdit", file_path]))
+                ],
+                "Windows": [
+                    # Try VSCode in various possible locations
+                    (lambda: any(os.path.exists(p) for p in [
+                        os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"),
+                        os.path.expandvars("%PROGRAMFILES%\\Microsoft VS Code\\Code.exe"),
+                        os.path.expandvars("%USERPROFILE%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe")
+                    ]), lambda: subprocess.run([next(p for p in [
+                        os.path.expandvars("%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"),
+                        os.path.expandvars("%PROGRAMFILES%\\Microsoft VS Code\\Code.exe"),
+                        os.path.expandvars("%USERPROFILE%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe")
+                    ] if os.path.exists(p)), "-g", f"{file_path}:{line_num}"])),
+                    
+                    # Try Notepad++
+                    (lambda: any(os.path.exists(p) for p in [
                         "C:\\Program Files\\Notepad++\\notepad++.exe",
                         "C:\\Program Files (x86)\\Notepad++\\notepad++.exe",
                         os.path.expandvars("%PROGRAMFILES%\\Notepad++\\notepad++.exe"),
                         os.path.expandvars("%PROGRAMFILES(X86)%\\Notepad++\\notepad++.exe")
-                    ]
+                    ]), lambda: subprocess.run([next(p for p in [
+                        "C:\\Program Files\\Notepad++\\notepad++.exe",
+                        "C:\\Program Files (x86)\\Notepad++\\notepad++.exe",
+                        os.path.expandvars("%PROGRAMFILES%\\Notepad++\\notepad++.exe"),
+                        os.path.expandvars("%PROGRAMFILES(X86)%\\Notepad++\\notepad++.exe")
+                    ] if os.path.exists(p)), "-n" + line_number, file_path])),
                     
-                    notepadpp_found = False
-                    for notepadpp_path in notepadpp_paths:
-                        if os.path.exists(notepadpp_path):
-                            subprocess.run([notepadpp_path, "-n" + line_number, file_path])
-                            notepadpp_found = True
-                            break
-                    
-                    if not notepadpp_found:
-                        # Try to use the default program associated with the file type
-                        try:
-                            subprocess.run(["cmd", "/c", "start", "", "/b", file_path])
-                        except Exception:
-                            # Fallback to os.startfile if subprocess fails
-                            os.startfile(file_path)
-                
+                    # Fallback to default application
+                    (lambda: True, lambda: subprocess.run(["cmd", "/c", "start", "", "/b", file_path], 
+                                                           stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL) 
+                                   if subprocess.run == subprocess.run else os.startfile(file_path))
+                ],
+                "Linux": [
+                    (lambda: subprocess.run(["which", "code"], stdout=subprocess.DEVNULL).returncode == 0,
+                     lambda: subprocess.run(["code", "-g", f"{file_path}:{line_num}"])),
+                    (lambda: subprocess.run(["which", "gedit"], stdout=subprocess.DEVNULL).returncode == 0,
+                     lambda: subprocess.run(["gedit", f"{file_path}+{line_num}"])),
+                    (lambda: subprocess.run(["which", "vim"], stdout=subprocess.DEVNULL).returncode == 0,
+                     lambda: subprocess.run(["x-terminal-emulator", "-e", f"vim +{line_num} {file_path}"])),
+                    (lambda: True, lambda: subprocess.run(["xdg-open", file_path]))
+                ]
+            }
+            
+            if system in editors_by_platform:
+                for condition, action in editors_by_platform[system]:
+                    if condition():
+                        action()
+                        break
                 self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
-                
-            elif system == "Linux":
-                # Try common editors with line number support
-                # Try VSCode
-                if subprocess.run(["which", "code"], stdout=subprocess.DEVNULL).returncode == 0:
-                    subprocess.run(["code", "-g", f"{file_path}:{line_num}"])
-                # Try gedit
-                elif subprocess.run(["which", "gedit"], stdout=subprocess.DEVNULL).returncode == 0:
-                    subprocess.run(["gedit", f"{file_path}+{line_num}"])
-                # Try vim in terminal
-                elif subprocess.run(["which", "vim"], stdout=subprocess.DEVNULL).returncode == 0:
-                    subprocess.run(["x-terminal-emulator", "-e", f"vim +{line_num} {file_path}"])
-                else:
-                    subprocess.run(["xdg-open", file_path])
-                
-                self.statusBar().showMessage(f"Opened {file_path}:{line_number}")
-                
             else:
                 self.statusBar().showMessage(f"Unsupported platform: {system}")
                 
@@ -1096,54 +1092,6 @@ class AISearchGUI(QMainWindow):
         """Clear the file cache to force directory re-scan on next search"""
         aisearch.clear_file_cache()
         self.statusBar().showMessage("File cache cleared")
-
-    def refine_search(self):
-        """Refine the search based on current results"""
-        if not self.matches:
-            self.show_error("No search results to refine from")
-            return
-            
-        # Get current search parameters
-        directory = self.dir_input.text().strip()
-        prompt = self.prompt_input.text().strip()
-        extensions_text = self.ext_input.text().strip()
-        extensions = extensions_text.split() if extensions_text else None
-        
-        # Show progress
-        self.progress_bar.setVisible(True)
-        self.search_button.setEnabled(False)
-        self.refine_button.setEnabled(False)
-        self.stop_action.setEnabled(True)
-        
-        # Reset the results buffer
-        self.results_buffer = ResultsBuffer()
-        
-        # Force garbage collection
-        import gc
-        gc.collect()
-        
-        # Redirect stdout to results buffer
-        self.original_stdout = sys.stdout
-        sys.stdout = StreamRedirector(self.results_buffer)
-        
-        # Start search thread with refined terms
-        self.search_thread = SearchThread(
-            self,
-            directory,
-            prompt,
-            extensions,
-            self.case_sensitive.isChecked(),
-            False,  # color_output (we handle this differently in GUI)
-            self.context_lines.value(),
-            not self.include_comments.isChecked(),
-            self.max_terms.value(),
-            self.max_workers.value(),
-            self.provider_combo.currentText()
-        )
-        self.search_thread.start()
-        
-        # Start the update timer to periodically process the buffer
-        self.update_timer.start(250)  # Update UI every 250ms
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
