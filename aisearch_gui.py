@@ -7,12 +7,19 @@ import time
 import re
 import subprocess
 import platform
+import markdown  # Add markdown library
+try:
+    import pygments # For code syntax highlighting
+    from pygments.formatters import HtmlFormatter
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
-                             QListWidget, QProgressBar, QMessageBox, QDialog)
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer
-from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat, QSyntaxHighlighter
+                             QListWidget, QProgressBar, QMessageBox, QDialog, QMenu)
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer, QMimeData
+from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat, QSyntaxHighlighter, QClipboard, QAction
 
 import aisearch
 
@@ -432,11 +439,26 @@ class ClickableTextEdit(QTextEdit):
         # Use a simpler pattern to match line numbers and delegate more complex path validation to a method
         self.file_match_pattern = re.compile(r'([^:]+):(\d+)')
         # Remove text selection flags to prevent automatic selection
-        self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse)
         self.setStatusTip("Click on file:line references to open in your default editor")
         
         # Add syntax highlighter
         self.highlighter = CodeSyntaxHighlighter(self.document())
+        
+        # Set a stylesheet for better markdown rendering
+        self.document().setDefaultStyleSheet("""
+            code { background-color: #2d2d2d; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+            pre { background-color: #2d2d2d; padding: 10px; border-radius: 5px; overflow-x: auto; }
+            blockquote { border-left: 3px solid #555; margin-left: 0; padding-left: 10px; color: #aaa; }
+            h1, h2, h3, h4 { color: #ddd; }
+            a { color: #3a92ea; text-decoration: none; }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #555; padding: 6px; }
+            th { background-color: #2d2d2d; }
+        """)
+        
+        # Store original markdown content for copying
+        self.markdown_content = ""
     
     @staticmethod
     def is_valid_file_path(path):
@@ -539,6 +561,21 @@ class ClickableTextEdit(QTextEdit):
     def mousePressEvent(self, event):
         """Handle mouse press to detect file references"""
         if event.button() == Qt.LeftButton:
+            # Check if we clicked on an HTML link that's a file reference
+            if self.textCursor().charFormat().isAnchor():
+                anchor_href = self.textCursor().charFormat().anchorHref()
+                if anchor_href:
+                    # Process as file reference if it matches our pattern
+                    match = self.file_match_pattern.search(anchor_href)
+                    if match and self.is_valid_file_path(match.group(1)):
+                        file_path = match.group(1)
+                        line_number = match.group(2)
+                        main_window = self.find_main_window()
+                        if main_window:
+                            main_window.open_file_in_editor(file_path, line_number)
+                            event.accept()
+                            return
+            
             # Get the line under the cursor
             cursor = self.cursorForPosition(event.pos())
             cursor.select(QTextCursor.LineUnderCursor)
@@ -581,6 +618,40 @@ class ClickableTextEdit(QTextEdit):
         # If we get here, either it's not a left click or no file pattern was found
         # Let the parent handle the event for normal text selection
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Custom context menu with markdown copy option"""
+        menu = QMenu(self)
+        
+        # Add standard actions
+        menu.addAction(self.action(QTextEdit.StandardAction.Cut))
+        menu.addAction(self.action(QTextEdit.StandardAction.Copy))
+        menu.addAction(self.action(QTextEdit.StandardAction.Paste))
+        menu.addSeparator()
+        
+        # Add custom actions for markdown
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            copy_markdown_action = QAction("Copy as Markdown", self)
+            copy_markdown_action.triggered.connect(self.copy_markdown_to_clipboard)
+            menu.addAction(copy_markdown_action)
+            
+        select_all_action = self.action(QTextEdit.StandardAction.SelectAll)
+        menu.addAction(select_all_action)
+        
+        menu.exec(event.globalPos())
+        
+    def copy_markdown_to_clipboard(self):
+        """Copy the original markdown content to clipboard"""
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            mime_data.setText(self.markdown_content)
+            clipboard.setMimeData(mime_data)
+            
+            # Find main window to show status message
+            main_window = self.find_main_window()
+            if main_window:
+                main_window.statusBar().showMessage("Markdown copied to clipboard", 3000)
 
 class AISearchGUI(QMainWindow):
     signal_update_status = Signal(str)
@@ -834,6 +905,7 @@ class AISearchGUI(QMainWindow):
         self.chat_output = ClickableTextEdit(chat_widget)
         chat_layout.addWidget(self.chat_output)
         
+        splitter.addWidget(results_widget)
         splitter.addWidget(chat_widget)
         
         # Set initial sizes
@@ -1155,7 +1227,49 @@ class AISearchGUI(QMainWindow):
     
     @Slot(str)
     def update_chat(self, response):
-        self.chat_output.setPlainText(response)
+        # Store original markdown for copy functionality
+        self.chat_output.markdown_content = response
+        
+        # Convert markdown to HTML
+        try:
+            # Set up extensions based on available libraries
+            extensions = ['fenced_code', 'tables']
+            extension_configs = {}
+            
+            # Add syntax highlighting if Pygments is available
+            if PYGMENTS_AVAILABLE:
+                extensions.append('codehilite')
+                formatter = HtmlFormatter(style='monokai')
+                extension_configs['codehilite'] = {
+                    'css_class': 'highlight',
+                    'guess_lang': True,
+                    'linenums': False
+                }
+                
+                # Add Pygments CSS to document stylesheet
+                pygments_css = formatter.get_style_defs('.highlight')
+                # Combine existing stylesheet with pygments styles
+                current_css = self.chat_output.document().defaultStyleSheet() 
+                self.chat_output.document().setDefaultStyleSheet(current_css + pygments_css)
+            
+            html_content = markdown.markdown(
+                response, 
+                extensions=extensions,
+                extension_configs=extension_configs
+            )
+           
+            # Preserve clickable file references - wrap them in custom spans
+            html_content = re.sub(
+                r'([^:<>\s]+?\.[a-zA-Z0-9]+):(\d+)', 
+                r'<span class="file-reference" style="color:#3a92ea;text-decoration:underline;cursor:pointer">\1:\2</span>', 
+                html_content
+            )
+            self.chat_output.setHtml(html_content)
+        except Exception as e:
+            # Fallback to plain text if markdown conversion fails
+            self.chat_output.setPlainText(response)
+            self.statusBar().showMessage(f"Markdown rendering error: {str(e)}")
+            
         self.progress_bar.setVisible(False)
         self.chat_button.setEnabled(True)
         self.chat_action.setEnabled(True)
