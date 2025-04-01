@@ -431,7 +431,7 @@ class CodeSyntaxHighlighter(QSyntaxHighlighter):
 
 class ClickableTextEdit(QTextEdit):
     """Custom QTextEdit that can detect clicks on file references"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, use_syntax_highlighter=True):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setMouseTracking(True)
@@ -442,8 +442,11 @@ class ClickableTextEdit(QTextEdit):
         self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard | Qt.LinksAccessibleByMouse)
         self.setStatusTip("Click on file:line references to open in your default editor")
         
-        # Add syntax highlighter
-        self.highlighter = CodeSyntaxHighlighter(self.document())
+        # Add syntax highlighter only if requested
+        if use_syntax_highlighter:
+            self.highlighter = CodeSyntaxHighlighter(self.document())
+        else:
+            self.highlighter = None
         
         # Set a stylesheet for better markdown rendering
         self.document().setDefaultStyleSheet("""
@@ -901,8 +904,8 @@ class AISearchGUI(QMainWindow):
         self.chat_input.setPalette(placeholder_palette)
         chat_layout.addWidget(self.chat_input)
         
-        # Use our custom ClickableTextEdit for chat output as well
-        self.chat_output = ClickableTextEdit(chat_widget)
+        # Use our custom ClickableTextEdit for chat output but disable syntax highlighting
+        self.chat_output = ClickableTextEdit(chat_widget, use_syntax_highlighter=False)
         chat_layout.addWidget(self.chat_output)
         
         splitter.addWidget(results_widget)
