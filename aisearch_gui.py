@@ -486,57 +486,6 @@ class ClickableTextEdit(QTextEdit):
             return False
         return True
     
-    @staticmethod
-    def test_file_pattern():
-        """Test the file pattern matching with various path formats"""
-        test_cases = [
-            # Windows paths
-            ("C:\\path\\to\\file.py:123", True),
-            ("D:/path/to/file.py:123", True),
-            ("C:\\Program Files\\App\\file.txt:456", True),
-            
-            # Windows \\?\ prefixed paths
-            ("\\\\?\\C:\\path\\to\\file.py:123", True),
-            ("\\\\?\\D:/path/to/file.py:123", True),
-            ("\\\\?\\C:\\Program Files\\App\\file.txt:456", True),
-            ("\\\\?\\UNC\\server\\share\\file.py:123", True),
-            
-            # Unix/Mac paths
-            ("/path/to/file.py:123", True),
-            ("/home/user/project/file.js:789", True),
-            ("/usr/local/bin/script.sh:42", True),
-            
-            # Relative paths
-            ("./file.py:123", True),
-            ("../file.py:123", True),
-            ("../../project/file.py:123", True),
-            
-            # Edge cases
-            ("file.py:123", False),  # No path separator
-            ("C:file.py:123", False),  # Missing path separator after drive
-            ("/file.py", False),  # No line number
-            ("file.py", False),  # No line number
-            ("C:\\path\\file", False),  # No line number
-            ("/path/file", False),  # No line number
-            ("\\\\?\\file.py:123", False),  # \\?\ without drive letter
-            ("\\\\?\\C:file.py:123", False),  # \\?\ with missing path separator
-        ]
-        
-        print("\nTesting file pattern matching:")
-        print("-" * 50)
-        pattern = re.compile(r'([^:]+):(\d+)')
-        
-        for test_path, expected in test_cases:
-            match = pattern.search(test_path)
-            if match:
-                path = match.group(1)
-                result = ClickableTextEdit.is_valid_file_path(path)
-            else:
-                result = False
-            
-            status = "✓" if result == expected else "✗"
-            print(f"{status} {test_path:<40} Expected: {expected}, Got: {result}")
-    
     def find_main_window(self):
         """Find the main window by traversing up the parent hierarchy"""
         parent = self.parent()
@@ -549,22 +498,65 @@ class ClickableTextEdit(QTextEdit):
     def mouseMoveEvent(self, event):
         """Handle mouse movement to highlight file references"""
         cursor = self.cursorForPosition(event.pos())
-        cursor.select(QTextCursor.LineUnderCursor)
-        line_text = cursor.selectedText()
         
-        # Check if cursor is on file:line pattern
-        match = self.file_match_pattern.search(line_text)
-        if match and self.is_valid_file_path(match.group(1)):
-            self.viewport().setCursor(Qt.PointingHandCursor)
-        else:
-            self.viewport().setCursor(Qt.IBeamCursor)
+        # Get the text cursor at the hover position and the line it's on
+        hover_cursor = QTextCursor(cursor)
+        click_pos = hover_cursor.position()
+        
+        # Get the whole line
+        line_cursor = QTextCursor(hover_cursor)
+        line_cursor.select(QTextCursor.LineUnderCursor)
+        line_text = line_cursor.selectedText()
+        
+        # Get start position of the line
+        line_cursor.movePosition(QTextCursor.StartOfLine)
+        line_start_pos = line_cursor.position()
+        
+        # Calculate relative position within the line
+        relative_pos = click_pos - line_start_pos
+        
+        # Look for file:line patterns in the line
+        for match in self.file_match_pattern.finditer(line_text):
+            # Check if the hover is within the file:line pattern
+            match_start = match.start()
+            match_end = match.end()
             
-        super().mouseMoveEvent(event)
+            if match_start <= relative_pos <= match_end and self.is_valid_file_path(match.group(1)):
+                # We're hovering over a file reference
+                self.viewport().setCursor(Qt.PointingHandCursor)
+                return
         
+        # We're not hovering over a file reference
+        self.viewport().setCursor(Qt.IBeamCursor)
+        super().mouseMoveEvent(event)
+    
     def mousePressEvent(self, event):
         """Handle mouse press to detect file references"""
         if event.button() == Qt.LeftButton:
-            # Check if we clicked on an HTML link that's a file reference
+            # Get the text cursor at the click position and the line it's on
+            click_cursor = self.cursorForPosition(event.pos())
+            
+            # Store the absolute cursor position
+            click_pos = click_cursor.position()
+            
+            # Get the whole line
+            line_cursor = QTextCursor(click_cursor)
+            line_cursor.select(QTextCursor.LineUnderCursor)
+            line_text = line_cursor.selectedText()
+            
+            # Skip empty lines
+            if not line_text.strip():
+                super().mousePressEvent(event)
+                return
+                
+            # Get start position of the line
+            line_cursor.movePosition(QTextCursor.StartOfLine)
+            line_start_pos = line_cursor.position()
+            
+            # Calculate relative position within the line
+            relative_pos = click_pos - line_start_pos
+            
+            # First check for HTML links
             if self.textCursor().charFormat().isAnchor():
                 anchor_href = self.textCursor().charFormat().anchorHref()
                 if anchor_href:
@@ -579,23 +571,8 @@ class ClickableTextEdit(QTextEdit):
                             event.accept()
                             return
             
-            # Get the text cursor at the click position and the line it's on
-            click_cursor = self.cursorForPosition(event.pos())
-            
-            # Store the absolute cursor position
-            click_pos = click_cursor.position()
-            
-            # Get the whole line
-            line_cursor = QTextCursor(click_cursor)
-            line_cursor.select(QTextCursor.LineUnderCursor)
-            line_text = line_cursor.selectedText()
-            
-            # Get start position of the line
-            line_cursor.movePosition(QTextCursor.StartOfLine)
-            line_start_pos = line_cursor.position()
-            
-            # Calculate relative position within the line
-            relative_pos = click_pos - line_start_pos
+            # Flag to track if we clicked on a file reference
+            clicked_file_ref = False
             
             # Look for file:line patterns in the line
             for match in self.file_match_pattern.finditer(line_text):
@@ -633,13 +610,231 @@ class ClickableTextEdit(QTextEdit):
                         
                         if os.path.exists(file_path):
                             main_window.open_file_in_editor(file_path, line_number)
+                            clicked_file_ref = True
                             event.accept()
                             return
+            
+            # If we didn't click on a file reference, check if the line has a file reference
+            # and show context popup
+            if not clicked_file_ref:
+                found_match = None
+                file_line_found = None
+                
+                # Find any file reference in the line
+                for match in self.file_match_pattern.finditer(line_text):
+                    file_path = match.group(1)
+                    line_number = match.group(2)
+                    
+                    if self.is_valid_file_path(file_path):
+                        file_line_found = (file_path, line_number)
+                        # Found a valid file reference in this line, now look for its context
+                        main_window = self.find_main_window()
+                        if main_window and hasattr(main_window, 'matches') and main_window.matches:
+                            # Try to find the file in matches
+                            found_match = self.find_matching_context(file_path, line_number, main_window.matches)
+                            if found_match:
+                                break
+                
+                if found_match:
+                    # Display context popup
+                    self.show_context_popup(event.globalPos(), found_match)
+                    event.accept()
+                    return
+                elif file_line_found:
+                    # We found a file reference but couldn't find its context,
+                    # try to load the file directly
+                    file_path, line_number = file_line_found
+                    
+                    # Normalize path
+                    main_window = self.find_main_window()
+                    if main_window:
+                        if not os.path.isabs(file_path):
+                            # Use the current search directory as the base
+                            base_dir = main_window.dir_input.text()
+                            file_path = file_path.replace('\\', '/')
+                            base_dir = base_dir.replace('\\', '/')
+                            file_path = file_path.lstrip('/')
+                            file_path = os.path.join(base_dir, file_path)
+                            file_path = os.path.normpath(file_path)
+                        else:
+                            file_path = os.path.normpath(file_path)
+                            
+                        if os.path.exists(file_path):
+                            # Try to read a few lines around the target line
+                            try:
+                                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                                    all_lines = f.readlines()
+                                
+                                line_idx = int(line_number) - 1
+                                if 0 <= line_idx < len(all_lines):
+                                    # Create a synthetic match
+                                    context_lines = 3  # Get 3 lines of context
+                                    start_line = max(0, line_idx - context_lines)
+                                    end_line = min(len(all_lines), line_idx + context_lines + 1)
+                                    
+                                    context = ''.join(all_lines[start_line:end_line])
+                                    
+                                    match_info = {
+                                        'file': file_path,
+                                        'line': line_number,
+                                        'term': "Direct file access",
+                                        'context': context
+                                    }
+                                    
+                                    self.show_context_popup(event.globalPos(), match_info)
+                                    event.accept()
+                                    return
+                            except Exception as e:
+                                print(f"Error reading file directly: {e}")
         
         # If we get here, either it's not a left click or no file pattern was found
         # Let the parent handle the event for normal text selection
         super().mousePressEvent(event)
+    
+    def find_matching_context(self, file_path, line_number, matches):
+        """Find matching context for a file path and line number"""
+        # Normalize paths for comparison
+        norm_file_path = os.path.normpath(file_path)
+        norm_file_path_lower = norm_file_path.lower() 
+        basename = os.path.basename(norm_file_path)
+        basename_lower = basename.lower()
+        
+        # Convert line number to string for comparison
+        line_str = str(line_number)
+        
+        # Try different matching strategies
+        for match in matches:
+            match_file = os.path.normpath(match['file'])
+            match_file_lower = match_file.lower()
+            match_basename = os.path.basename(match_file)
+            match_basename_lower = match_basename.lower()
+            
+            # Try different matching strategies with decreasing specificity
+            if (match_file == norm_file_path or 
+                match_file_lower == norm_file_path_lower or
+                # Try relaxed matching using path endings
+                match_file.endswith(norm_file_path) or
+                match_file_lower.endswith(norm_file_path_lower) or
+                # Try basename matching
+                match_basename == basename or
+                match_basename_lower == basename_lower):
+                
+                # Check line number
+                if str(match['line']) == line_str:
+                    return match
+        
+        # No match found
+        return None
 
+    def show_context_popup(self, position, match_info):
+        """Show a popup with context information from the match"""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QTextBrowser
+        
+        # Create a dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Code Context")
+        dialog.setFixedSize(600, 400)  # Make it a bit larger
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add file info
+        file_label = QLabel(f"<b>{match_info['file']}:{match_info['line']}</b>")
+        if 'term' in match_info:
+            file_label.setText(f"{file_label.text()} (matched: {match_info['term']})")
+        file_label.setTextFormat(Qt.RichText)
+        file_label.setWordWrap(True)
+        layout.addWidget(file_label)
+        
+        # Add context
+        context_browser = QTextBrowser()
+        context_browser.setFont(QFont("Menlo, Monaco, Courier New", 10))
+        context_browser.setLineWrapMode(QTextBrowser.NoWrap)  # Prevent line wrapping
+        
+        # Apply syntax highlighting to the context
+        if match_info.get('context'):
+            context_text = match_info['context']
+            
+            # Apply some basic syntax highlighting with HTML
+            if PYGMENTS_AVAILABLE:
+                from pygments import highlight
+                from pygments.lexers import guess_lexer_for_filename, TextLexer
+                from pygments.formatters import HtmlFormatter
+                
+                try:
+                    # Try to get a lexer based on the file extension
+                    try:
+                        lexer = guess_lexer_for_filename(match_info['file'], context_text)
+                    except:
+                        # Fall back to a basic lexer
+                        lexer = TextLexer()
+                        
+                    formatter = HtmlFormatter(style='monokai', linenos=False)
+                    highlighted_html = highlight(context_text, lexer, formatter)
+                    
+                    # Add pygments CSS
+                    css = formatter.get_style_defs('.highlight')
+                    context_browser.document().setDefaultStyleSheet(css)
+                    
+                    context_browser.setHtml(highlighted_html)
+                except Exception as e:
+                    print(f"Syntax highlighting error: {e}")
+                    # Fall back to plain text if highlighting fails
+                    context_browser.setPlainText(context_text)
+            else:
+                context_browser.setPlainText(context_text)
+        
+        layout.addWidget(context_browser, 1)  # Give more space to the context
+        
+        # Add buttons
+        button_layout = QHBoxLayout()
+        
+        # Open file button
+        open_btn = QPushButton("Open in Editor")
+        open_btn.clicked.connect(lambda: self.open_file_from_popup(match_info['file'], match_info['line'], dialog))
+        button_layout.addWidget(open_btn)
+        
+        # Add spacing
+        button_layout.addStretch(1)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Position dialog relative to the main window rather than cursor
+        # to ensure it's always visible
+        main_window = self.find_main_window()
+        if main_window:
+            geom = main_window.geometry()
+            dialog_x = geom.x() + (geom.width() - dialog.width()) / 2
+            dialog_y = geom.y() + (geom.height() - dialog.height()) / 2
+            dialog.move(int(dialog_x), int(dialog_y))
+        else:
+            # Fall back to positioning near cursor
+            dialog.move(position.x(), position.y())
+            
+        # Show dialog
+        dialog.show()
+    
+    def open_file_from_popup(self, file_path, line_number, dialog=None):
+        """Open a file at the specified line from a popup dialog"""
+        main_window = self.find_main_window()
+        if main_window:
+            # Normalize path if needed
+            if not os.path.isabs(file_path):
+                base_dir = main_window.dir_input.text()
+                file_path = os.path.normpath(os.path.join(base_dir, file_path))
+            
+            if os.path.exists(file_path):
+                main_window.open_file_in_editor(file_path, line_number)
+                
+                # Close the dialog if provided
+                if dialog:
+                    dialog.close()
+    
     def contextMenuEvent(self, event):
         """Custom context menu with markdown copy option"""
         menu = QMenu(self)
