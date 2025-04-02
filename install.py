@@ -16,7 +16,8 @@ REQUIREMENTS = {
     "anthropic": ">=0.18.1",
     "openai": ">=1.12.0",
     "tqdm": ">=4.66.1",
-    "pyside6": ">=6.6.1"
+    "pyside6": ">=6.6.1",
+    "markdown": ">=3.4.0"
 }
 
 def validate_api_key(key, provider):

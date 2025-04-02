@@ -17,6 +17,7 @@ def check_dependencies():
         gui_available = False
         try:
             from PySide6.QtWidgets import QApplication
+            import markdown
             gui_available = True
         except ImportError:
             pass
@@ -26,7 +27,7 @@ def check_dependencies():
         print("Please install required packages:")
         print("  pip install anthropic openai tqdm")
         print("For GUI support:")
-        print("  pip install pyside6")
+        print("  pip install pyside6 markdown")
         return False, False
 
 def main():
