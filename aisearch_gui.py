@@ -579,44 +579,62 @@ class ClickableTextEdit(QTextEdit):
                             event.accept()
                             return
             
-            # Get the line under the cursor
-            cursor = self.cursorForPosition(event.pos())
-            cursor.select(QTextCursor.LineUnderCursor)
-            line_text = cursor.selectedText()
+            # Get the text cursor at the click position and the line it's on
+            click_cursor = self.cursorForPosition(event.pos())
             
-            # Look for file:line pattern
-            match = self.file_match_pattern.search(line_text)
-            if match and self.is_valid_file_path(match.group(1)):
-                file_path = match.group(1)
-                line_number = match.group(2)
+            # Store the absolute cursor position
+            click_pos = click_cursor.position()
+            
+            # Get the whole line
+            line_cursor = QTextCursor(click_cursor)
+            line_cursor.select(QTextCursor.LineUnderCursor)
+            line_text = line_cursor.selectedText()
+            
+            # Get start position of the line
+            line_cursor.movePosition(QTextCursor.StartOfLine)
+            line_start_pos = line_cursor.position()
+            
+            # Calculate relative position within the line
+            relative_pos = click_pos - line_start_pos
+            
+            # Look for file:line patterns in the line
+            for match in self.file_match_pattern.finditer(line_text):
+                # Check if the click is within the file:line pattern
+                match_start = match.start()
+                match_end = match.end()
                 
-                # Find the main window
-                main_window = self.find_main_window()
-                if main_window is None:
-                    return
-                
-                # If it's a relative path, make it absolute
-                if not os.path.isabs(file_path):
-                    # Use the current search directory as the base
-                    base_dir = main_window.dir_input.text()
-                    # Normalize path separators
-                    file_path = file_path.replace('\\', '/')
-                    base_dir = base_dir.replace('\\', '/')
-                    # Remove any leading slashes from file_path
-                    file_path = file_path.lstrip('/')
-                    # Join paths
-                    file_path = os.path.join(base_dir, file_path)
-                    # Normalize the final path
-                    file_path = os.path.normpath(file_path)
-                else:
-                    # For absolute paths, just normalize the separators
-                    file_path = os.path.normpath(file_path)
-                
-                if os.path.exists(file_path):
-                    main_window.open_file_in_editor(file_path, line_number)
-                # Accept the event to prevent text selection
-                event.accept()
-                return
+                if match_start <= relative_pos <= match_end:
+                    # Click is within the file:line pattern
+                    file_path = match.group(1)
+                    line_number = match.group(2)
+                    
+                    if self.is_valid_file_path(file_path):
+                        # Find the main window
+                        main_window = self.find_main_window()
+                        if main_window is None:
+                            return
+                        
+                        # If it's a relative path, make it absolute
+                        if not os.path.isabs(file_path):
+                            # Use the current search directory as the base
+                            base_dir = main_window.dir_input.text()
+                            # Normalize path separators
+                            file_path = file_path.replace('\\', '/')
+                            base_dir = base_dir.replace('\\', '/')
+                            # Remove any leading slashes from file_path
+                            file_path = file_path.lstrip('/')
+                            # Join paths
+                            file_path = os.path.join(base_dir, file_path)
+                            # Normalize the final path
+                            file_path = os.path.normpath(file_path)
+                        else:
+                            # For absolute paths, just normalize the separators
+                            file_path = os.path.normpath(file_path)
+                        
+                        if os.path.exists(file_path):
+                            main_window.open_file_in_editor(file_path, line_number)
+                            event.accept()
+                            return
         
         # If we get here, either it's not a left click or no file pattern was found
         # Let the parent handle the event for normal text selection
