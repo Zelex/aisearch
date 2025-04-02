@@ -1561,8 +1561,23 @@ class AISearchGUI(QMainWindow):
             
             editors_by_platform = {
                 "Darwin": [  # macOS
-                    (lambda: os.path.exists("/Applications/Visual Studio Code.app"), 
-                     lambda: subprocess.run(["open", "-a", "Visual Studio Code", "--args", "-g", f"{file_path}:{line_num}"])),
+                    # Check if the 'code' command is available in PATH
+                    (lambda: subprocess.run(["which", "code"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0,
+                     lambda: subprocess.run(["code", "--goto", f"{file_path}:{line_num}"])),
+                    # Check common VS Code installation locations
+                    (lambda: any(os.path.exists(p) for p in [
+                        "/Applications/Visual Studio Code.app", 
+                        "/Applications/VSCode.app",
+                        "/Applications/VS Code.app",
+                        os.path.expanduser("~/Applications/Visual Studio Code.app"),
+                        os.path.expanduser("~/Applications/VSCode.app"),
+                        os.path.expanduser("~/Applications/VS Code.app")
+                    ]), lambda: subprocess.run(["open", "-a", "Visual Studio Code", "--args", "-g", f"{file_path}:{line_num}"])),
+                    # Check if VSCodium exists (open-source VS Code)
+                    (lambda: any(os.path.exists(p) for p in [
+                        "/Applications/VSCodium.app",
+                        os.path.expanduser("~/Applications/VSCodium.app")
+                    ]), lambda: subprocess.run(["open", "-a", "VSCodium", "--args", "-g", f"{file_path}:{line_num}"])),
                     (lambda: os.path.exists("/Applications/Sublime Text.app"), 
                      lambda: subprocess.run(["open", "-a", "Sublime Text", "--args", f"{file_path}:{line_num}"])),
                     (lambda: True,  # Fallback to TextEdit
