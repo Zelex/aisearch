@@ -17,7 +17,8 @@ except ImportError:
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
-                             QListWidget, QProgressBar, QMessageBox, QDialog, QMenu)
+                             QListWidget, QProgressBar, QMessageBox, QDialog, QMenu, QTabWidget, QListWidgetItem,
+                             QGridLayout)
 from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer, QMimeData
 from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat, QSyntaxHighlighter, QClipboard, QAction
 
@@ -893,245 +894,271 @@ class AISearchGUI(QMainWindow):
         
     def setupUI(self):
         self.setWindowTitle("AI Code Search")
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1200, 800)  # Larger default size for more content
         
-        # Create toolbar
-        self.toolbar = self.addToolBar("Main Toolbar")
-        self.toolbar.setMovable(False)
-        self.toolbar.setIconSize(QSize(24, 24))
+        # Create central widget with main layout
+        central_widget = QWidget()
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Add toolbar actions
-        search_action = self.toolbar.addAction("Search")
-        search_action.triggered.connect(self.start_search)
-        search_action.setToolTip("Start a new search")
-        
-        # Add stop search action
-        self.stop_action = self.toolbar.addAction("Stop")
-        self.stop_action.triggered.connect(self.stop_search)
-        self.stop_action.setToolTip("Stop the current search")
-        self.stop_action.setEnabled(False)
-        
-        self.toolbar.addSeparator()
-        
-        clear_action = self.toolbar.addAction("Clear")
-        clear_action.triggered.connect(self.clear_results)
-        clear_action.setToolTip("Clear all results")
-        
-        self.toolbar.addSeparator()
-        
-        # Add clear cache action
-        clear_cache_action = self.toolbar.addAction("Clear Cache")
-        clear_cache_action.triggered.connect(self.clear_file_cache)
-        clear_cache_action.setToolTip("Clear file list cache to force directory re-scan")
-        
-        self.toolbar.addSeparator()
-        
-        self.chat_action = self.toolbar.addAction("Chat")
-        self.chat_action.triggered.connect(self.start_chat)
-        self.chat_action.setToolTip("Chat about results")
-        self.chat_action.setEnabled(False)
-        
-        self.toolbar.addSeparator()
-        
-        # Add API key actions
-        anthropic_key_action = self.toolbar.addAction("Anthropic Key")
-        anthropic_key_action.triggered.connect(lambda: self.show_api_key_dialog("anthropic"))
-        anthropic_key_action.setToolTip("Set your Anthropic API key")
-        
-        openai_key_action = self.toolbar.addAction("OpenAI Key")
-        openai_key_action.triggered.connect(lambda: self.show_api_key_dialog("openai"))
-        openai_key_action.setToolTip("Set your OpenAI API key")
-        
-        self.toolbar.addSeparator()
-        
-        # Add provider selection
-        provider_layout = QHBoxLayout()
-        provider_layout.addWidget(QLabel("AI Provider:"))
-        self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["anthropic", "openai"])
-        self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
-        provider_layout.addWidget(self.provider_combo)
-        
-        # Main layout
-        main_widget = QWidget()
-        main_layout = QVBoxLayout(main_widget)
-        
-        # Search configuration section
-        config_group = QGroupBox("Search Configuration")
-        config_layout = QVBoxLayout(config_group)
+        # ----- Left Sidebar -----
+        sidebar_widget = QWidget()
+        sidebar_widget.setObjectName("sidebar")
+        sidebar_widget.setFixedWidth(300)
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        sidebar_layout.setContentsMargins(10, 10, 10, 10)
         
         # Directory selection
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("Directory:"))
+        dir_group = QGroupBox("Project")
+        dir_group.setObjectName("sidebar-group")
+        dir_layout = QVBoxLayout(dir_group)
+        
+        dir_header = QHBoxLayout()
+        dir_header.addWidget(QLabel("Directory:"))
+        browse_btn = QPushButton("Browse...")
+        browse_btn.setFixedWidth(80)
+        browse_btn.clicked.connect(self.browse_directory)
+        dir_header.addWidget(browse_btn)
+        dir_layout.addLayout(dir_header)
+        
         self.dir_input = QLineEdit()
         dir_layout.addWidget(self.dir_input)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self.browse_directory)
-        dir_layout.addWidget(browse_btn)
-        config_layout.addLayout(dir_layout)
-        
-        # Prompt input
-        prompt_layout = QHBoxLayout()
-        prompt_layout.addWidget(QLabel("Prompt:"))
-        self.prompt_input = QLineEdit()
-        prompt_layout.addWidget(self.prompt_input)
-        config_layout.addLayout(prompt_layout)
         
         # Extensions input
         ext_layout = QHBoxLayout()
         ext_layout.addWidget(QLabel("File Extensions:"))
+        dir_layout.addLayout(ext_layout)
+        
         self.ext_input = QLineEdit()
-        self.ext_input.setPlaceholderText(".py .js .ts (leave empty for all files)")
-        # Make placeholder text more visible
+        self.ext_input.setPlaceholderText(".py .js .ts (leave empty for all)")
         placeholder_palette = self.ext_input.palette()
         placeholder_palette.setColor(placeholder_palette.ColorRole.PlaceholderText, QColor("#cccccc"))
         self.ext_input.setPalette(placeholder_palette)
-        ext_layout.addWidget(self.ext_input)
-        config_layout.addLayout(ext_layout)
+        dir_layout.addWidget(self.ext_input)
         
-        # Options layout
-        options_layout = QHBoxLayout()
+        # File cache action
+        clear_cache_btn = QPushButton("Clear File Cache")
+        clear_cache_btn.clicked.connect(self.clear_file_cache)
+        dir_layout.addWidget(clear_cache_btn)
         
-        # Left options (checkboxes)
-        left_options = QVBoxLayout()
-        left_options.setSpacing(5)  # Reduce spacing between checkboxes
+        sidebar_layout.addWidget(dir_group)
+        
+        # Search options
+        search_group = QGroupBox("Search Options")
+        search_group.setObjectName("sidebar-group")
+        search_layout = QVBoxLayout(search_group)
+        
+        # Case sensitivity and comments
+        options_layout = QVBoxLayout()
         self.case_sensitive = QCheckBox("Case Sensitive")
         self.case_sensitive.setChecked(True)
-        left_options.addWidget(self.case_sensitive)
+        options_layout.addWidget(self.case_sensitive)
+        
         self.include_comments = QCheckBox("Include Comments")
-        self.include_comments.setChecked(True)  # Include comments by default
-        left_options.addWidget(self.include_comments)
-        options_layout.addLayout(left_options)
+        self.include_comments.setChecked(True)
+        options_layout.addWidget(self.include_comments)
+        search_layout.addLayout(options_layout)
         
-        # Add some spacing between option groups
-        options_layout.addSpacing(20)
-        
-        # Middle options (terms and workers)
-        middle_options = QVBoxLayout()
-        middle_options.setSpacing(5)  # Reduce spacing between rows
-        
-        # Terms row
-        terms_layout = QHBoxLayout()
-        terms_layout.setSpacing(5)  # Reduce spacing between label and spinbox
-        terms_layout.addWidget(QLabel("Max Terms:"))
+        # Terms and workers
+        options_grid = QGridLayout()
+        options_grid.addWidget(QLabel("Max Terms:"), 0, 0)
         self.max_terms = QSpinBox()
         self.max_terms.setRange(1, 100)
         self.max_terms.setValue(8)
-        self.max_terms.setMinimumWidth(60)  # Make spinbox wider
-        terms_layout.addWidget(self.max_terms)
-        middle_options.addLayout(terms_layout)
+        options_grid.addWidget(self.max_terms, 0, 1)
         
-        # Workers row
-        workers_layout = QHBoxLayout()
-        workers_layout.setSpacing(5)  # Reduce spacing between label and spinbox
-        workers_layout.addWidget(QLabel("Workers:"))
+        options_grid.addWidget(QLabel("Workers:"), 1, 0)
         self.max_workers = QSpinBox()
         self.max_workers.setRange(1, 64)
         self.max_workers.setValue(4)
-        self.max_workers.setMinimumWidth(60)  # Make spinbox wider
-        workers_layout.addWidget(self.max_workers)
-        middle_options.addLayout(workers_layout)
+        options_grid.addWidget(self.max_workers, 1, 1)
         
-        options_layout.addLayout(middle_options)
-        
-        # Add some spacing between option groups
-        options_layout.addSpacing(20)
-        
-        # Right options (context lines and buttons)
-        right_options = QVBoxLayout()
-        right_options.setSpacing(5)  # Reduce spacing between rows
-        
-        # Context lines row
-        context_layout = QHBoxLayout()
-        context_layout.setSpacing(5)  # Reduce spacing between label and spinbox
-        context_layout.addWidget(QLabel("Context Lines:"))
+        options_grid.addWidget(QLabel("Context Lines:"), 2, 0)
         self.context_lines = QSpinBox()
         self.context_lines.setRange(0, 20)
         self.context_lines.setValue(2)
-        self.context_lines.setMinimumWidth(60)  # Make spinbox wider
-        context_layout.addWidget(self.context_lines)
-        right_options.addLayout(context_layout)
+        options_grid.addWidget(self.context_lines, 2, 1)
         
-        # Search buttons row
-        search_buttons_layout = QHBoxLayout()
-        search_buttons_layout.setSpacing(5)  # Reduce spacing between buttons
+        search_layout.addLayout(options_grid)
+        sidebar_layout.addWidget(search_group)
+        
+        # AI provider
+        ai_group = QGroupBox("AI Provider")
+        ai_group.setObjectName("sidebar-group")
+        ai_layout = QVBoxLayout(ai_group)
+        
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["anthropic", "openai"])
+        self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
+        ai_layout.addWidget(self.provider_combo)
+        
+        api_buttons = QHBoxLayout()
+        anthropic_key_btn = QPushButton("Anthropic Key")
+        anthropic_key_btn.clicked.connect(lambda: self.show_api_key_dialog("anthropic"))
+        api_buttons.addWidget(anthropic_key_btn)
+        
+        openai_key_btn = QPushButton("OpenAI Key")
+        openai_key_btn.clicked.connect(lambda: self.show_api_key_dialog("openai"))
+        api_buttons.addWidget(openai_key_btn)
+        
+        ai_layout.addLayout(api_buttons)
+        sidebar_layout.addWidget(ai_group)
+        
+        # Actions section at bottom of sidebar
+        action_group = QGroupBox("Actions")
+        action_group.setObjectName("sidebar-group")
+        action_layout = QVBoxLayout(action_group)
+        
+        # Prompt input
+        action_layout.addWidget(QLabel("Search Prompt:"))
+        self.prompt_input = QLineEdit()
+        action_layout.addWidget(self.prompt_input)
+        
+        # Search buttons
+        search_buttons = QHBoxLayout()
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self.start_search)
-        self.search_button.setMinimumWidth(80)  # Make button wider
-        search_buttons_layout.addWidget(self.search_button)
+        search_buttons.addWidget(self.search_button)
         
-        self.refine_button = QPushButton("Refine Search")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.clicked.connect(self.stop_search)
+        self.stop_button.setEnabled(False)
+        search_buttons.addWidget(self.stop_button)
+        
+        self.refine_button = QPushButton("Refine")
         self.refine_button.clicked.connect(self.refine_search)
-        self.refine_button.setToolTip("Refine search based on current results")
         self.refine_button.setEnabled(False)
-        self.refine_button.setMinimumWidth(80)  # Make button wider
-        search_buttons_layout.addWidget(self.refine_button)
+        search_buttons.addWidget(self.refine_button)
         
-        right_options.addLayout(search_buttons_layout)
-        options_layout.addLayout(right_options)
+        action_layout.addLayout(search_buttons)
         
-        config_layout.addLayout(options_layout)
-        config_layout.addLayout(provider_layout)
-        main_layout.addWidget(config_group)
+        clear_button = QPushButton("Clear Results")
+        clear_button.clicked.connect(self.clear_results)
+        action_layout.addWidget(clear_button)
         
-        # Splitter for results and chat
-        splitter = QSplitter(Qt.Vertical)
+        sidebar_layout.addWidget(action_group)
         
-        # Results section
-        results_widget = QWidget()
-        results_layout = QVBoxLayout(results_widget)
-        results_layout.setContentsMargins(0, 0, 0, 0)
+        # Add stretcher to push everything up
+        sidebar_layout.addStretch(1)
         
-        # Add a label to indicate clickable references
+        main_layout.addWidget(sidebar_widget)
+        
+        # ----- Main Content Area with Tabs -----
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Tab widget
+        self.tabs = QTabWidget()
+        
+        # ----- Search Results Tab -----
+        results_tab = QWidget()
+        results_layout = QHBoxLayout(results_tab)
+        results_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # File tree view (left side of results)
+        file_tree_widget = QWidget()
+        file_tree_widget.setFixedWidth(250)
+        file_tree_layout = QVBoxLayout(file_tree_widget)
+        file_tree_layout.setContentsMargins(0, 0, 0, 0)
+        
+        file_tree_header = QHBoxLayout()
+        file_tree_header.addWidget(QLabel("Matched Files"))
+        file_tree_layout.addLayout(file_tree_header)
+        
+        self.file_list = QListWidget()
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.itemClicked.connect(self.on_file_selected)
+        file_tree_layout.addWidget(self.file_list)
+        
+        results_layout.addWidget(file_tree_widget)
+        
+        # Results panel (right side)
+        results_panel = QWidget()
+        results_panel_layout = QVBoxLayout(results_panel)
+        results_panel_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Results toolbar
+        results_toolbar = QHBoxLayout()
+        results_toolbar.addWidget(QLabel("Results:"))
+        
+        self.match_count_label = QLabel("0 matches")
+        results_toolbar.addWidget(self.match_count_label)
+        
+        results_toolbar.addStretch(1)
+        
+        # Filter input for results
+        results_toolbar.addWidget(QLabel("Filter:"))
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Filter results...")
+        self.filter_input.setMaximumWidth(200)
+        self.filter_input.textChanged.connect(self.filter_results)
+        results_toolbar.addWidget(self.filter_input)
+        
+        results_panel_layout.addLayout(results_toolbar)
+        
+        # Results text area with clickable references
         click_hint = QLabel("💡 Click on any file:line reference to open in your default editor")
         click_hint.setStyleSheet("color: #999999; font-style: italic;")
-        results_layout.addWidget(click_hint)
+        results_panel_layout.addWidget(click_hint)
         
-        # Use our custom ClickableTextEdit instead of QTextEdit
-        self.results_text = ClickableTextEdit(results_widget)
-        # Use a better cross-platform monospace font
+        self.results_text = ClickableTextEdit(results_panel)
         self.results_text.setFont(QFont("Menlo, Monaco, Courier New", 10))
-        results_layout.addWidget(self.results_text)
+        results_panel_layout.addWidget(self.results_text)
         
-        splitter.addWidget(results_widget)
+        results_layout.addWidget(results_panel)
         
-        # Chat section
-        chat_widget = QWidget()
-        chat_layout = QVBoxLayout(chat_widget)
-        chat_layout.setContentsMargins(0, 0, 0, 0)
+        self.tabs.addTab(results_tab, "Search Results")
+        
+        # ----- Chat Tab -----
+        chat_tab = QWidget()
+        chat_layout = QVBoxLayout(chat_tab)
+        chat_layout.setContentsMargins(10, 10, 10, 10)
         
         chat_header = QHBoxLayout()
-        chat_header.addWidget(QLabel("Chat with AI about results:"))
+        chat_header.addWidget(QLabel("Chat with AI about search results:"))
+        
         self.chat_button = QPushButton("Ask AI")
         self.chat_button.clicked.connect(self.start_chat)
         self.chat_button.setEnabled(False)
         chat_header.addWidget(self.chat_button)
         chat_layout.addLayout(chat_header)
         
+        chat_splitter = QSplitter(Qt.Vertical)
+        
+        # Chat input
+        chat_input_widget = QWidget()
+        chat_input_layout = QVBoxLayout(chat_input_widget)
+        chat_input_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.chat_input = QTextEdit()
         self.chat_input.setPlaceholderText("Type your question about the search results...")
-        self.chat_input.setMaximumHeight(60)
-        # Make placeholder text more visible
+        self.chat_input.setMaximumHeight(80)
         placeholder_palette = self.chat_input.palette()
         placeholder_palette.setColor(placeholder_palette.ColorRole.PlaceholderText, QColor("#cccccc"))
         self.chat_input.setPalette(placeholder_palette)
-        chat_layout.addWidget(self.chat_input)
+        chat_input_layout.addWidget(self.chat_input)
         
-        # Use our custom ClickableTextEdit for chat output but disable syntax highlighting
-        self.chat_output = ClickableTextEdit(chat_widget, use_syntax_highlighter=False)
-        chat_layout.addWidget(self.chat_output)
+        chat_splitter.addWidget(chat_input_widget)
         
-        splitter.addWidget(results_widget)
-        splitter.addWidget(chat_widget)
+        # Chat output
+        self.chat_output = ClickableTextEdit(chat_tab, use_syntax_highlighter=False)
+        chat_splitter.addWidget(self.chat_output)
         
         # Set initial sizes
-        splitter.setSizes([400, 300])
-        main_layout.addWidget(splitter)
+        chat_splitter.setSizes([100, 500])
+        chat_layout.addWidget(chat_splitter)
         
-        # Status bar
+        self.tabs.addTab(chat_tab, "AI Chat")
+        
+        content_layout.addWidget(self.tabs)
+        
+        main_layout.addWidget(content_widget)
+        
+        # Status bar with progress
         self.statusBar().showMessage("Ready")
         
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximum(0)  # Indeterminate
         self.progress_bar.setVisible(False)
@@ -1144,107 +1171,241 @@ class AISearchGUI(QMainWindow):
         self.signal_error.connect(self.show_error)
         self.signal_chat_response.connect(self.update_chat)
         
-        self.setCentralWidget(main_widget)
+        self.setCentralWidget(central_widget)
+        
+        # Apply custom styling
+        self.apply_custom_styles()
     
-    def loadSettings(self):
-        """Load saved settings"""
-        # Directory
-        directory = self.settings.value("directory", "")
-        if directory and os.path.exists(directory):
-            self.dir_input.setText(directory)
+    def apply_custom_styles(self):
+        """Apply additional custom styles to the UI components"""
+        # Sidebar styling
+        self.setStyleSheet(self.styleSheet() + """
+            #sidebar {
+                background-color: #2d2d2d;
+                border-right: 1px solid #444;
+            }
             
-        # Prompt
-        prompt = self.settings.value("prompt", "")
-        self.prompt_input.setText(prompt)
+            #sidebar-group {
+                background-color: #333;
+                border: 1px solid #444;
+                border-radius: 4px;
+            }
+            
+            QTabWidget::pane {
+                border: 1px solid #444;
+                border-radius: 4px;
+                background-color: #252525;
+            }
+            
+            QTabBar::tab {
+                background-color: #353535;
+                color: #ccc;
+                border: 1px solid #444;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                padding: 6px 12px;
+                margin-right: 2px;
+            }
+            
+            QTabBar::tab:selected {
+                background-color: #252525;
+                color: white;
+                border-bottom: none;
+            }
+            
+            QListWidget {
+                background-color: #252525;
+                border: 1px solid #444;
+                border-radius: 4px;
+            }
+            
+            QListWidget::item {
+                padding: 4px;
+                border-bottom: 1px solid #333;
+            }
+            
+            QListWidget::item:selected {
+                background-color: #2a82da;
+                color: white;
+            }
+            
+            QListWidget::item:alternate {
+                background-color: #2a2a2a;
+            }
+        """)
+
+    def on_file_selected(self, item):
+        """Handle file selection in the file list"""
+        if not hasattr(self, 'matches') or not self.matches:
+            return
+            
+        file_path = item.data(Qt.UserRole)
+        if not file_path:
+            return
+            
+        # Show only matches for this file
+        cursor = self.results_text.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self.results_text.setTextCursor(cursor)
         
-        # Extensions
-        extensions = self.settings.value("extensions", "")
-        self.ext_input.setText(extensions)
+        # Clear current content and show only matches for selected file
+        self.results_text.clear()
+        file_matches = [m for m in self.matches if m['file'] == file_path]
         
-        # API Keys (stored encrypted)
-        self.anthropic_key = self.settings.value("anthropic_api_key", "")
-        self.openai_key = self.settings.value("openai_api_key", "")
-        
-        # Set environment variables if API keys are available
-        if self.anthropic_key:
-            os.environ["ANTHROPIC_API_KEY"] = self.anthropic_key
-        if self.openai_key:
-            os.environ["OPENAI_API_KEY"] = self.openai_key
-        
-        # Provider
-        provider = self.settings.value("provider", "anthropic")
-        self.provider_combo.setCurrentText(provider)
-        
-        # Checkboxes
-        self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
-        self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
-        
-        # SpinBoxes
-        self.max_terms.setValue(self.settings.value("max_terms", 8, type=int))
-        self.max_workers.setValue(self.settings.value("max_workers", 4, type=int))
-        self.context_lines.setValue(self.settings.value("context_lines", 2, type=int))
+        for i, match in enumerate(file_matches):
+            self.results_text.append(f"{match['file']}:{match['line']} (Match #{i+1})\n")
+            self.results_text.append(f"Matched term: {match['term']}\n")
+            self.results_text.append(match['context'])
+            self.results_text.append("\n---\n")
     
-    def saveSettings(self):
-        """Save current settings"""
-        self.settings.setValue("directory", self.dir_input.text())
-        self.settings.setValue("prompt", self.prompt_input.text())
-        self.settings.setValue("extensions", self.ext_input.text())
-        self.settings.setValue("case_sensitive", self.case_sensitive.isChecked())
-        self.settings.setValue("include_comments", self.include_comments.isChecked())
-        self.settings.setValue("max_terms", self.max_terms.value())
-        self.settings.setValue("max_workers", self.max_workers.value())
-        self.settings.setValue("context_lines", self.context_lines.value())
-        self.settings.setValue("provider", self.provider_combo.currentText())
+    def filter_results(self, filter_text):
+        """Filter results based on filter text"""
+        if not filter_text:
+            # If no filter, restore full results or selected file results
+            selected_items = self.file_list.selectedItems()
+            if selected_items:
+                self.on_file_selected(selected_items[0])
+            else:
+                self.display_all_results()
+            return
+            
+        # Clear current content
+        self.results_text.clear()
         
-        # Save API keys if present
-        if hasattr(self, 'anthropic_key') and self.anthropic_key:
-            self.settings.setValue("anthropic_api_key", self.anthropic_key)
-        if hasattr(self, 'openai_key') and self.openai_key:
-            self.settings.setValue("openai_api_key", self.openai_key)
+        if not hasattr(self, 'matches') or not self.matches:
+            return
+            
+        # Filter matches that contain the filter text
+        filtered_matches = [m for m in self.matches 
+                            if filter_text.lower() in m['file'].lower() 
+                            or filter_text.lower() in m['context'].lower()
+                            or filter_text.lower() in m['term'].lower()]
+        
+        for i, match in enumerate(filtered_matches):
+            self.results_text.append(f"{match['file']}:{match['line']} (Match #{i+1})\n")
+            self.results_text.append(f"Matched term: {match['term']}\n")
+            self.results_text.append(match['context'])
+            self.results_text.append("\n---\n")
+        
+        self.match_count_label.setText(f"{len(filtered_matches)} filtered matches")
     
-    def closeEvent(self, event):
-        """Handle window close event"""
-        self.saveSettings()
+    def display_all_results(self):
+        """Display all results in the results text area"""
+        if not hasattr(self, 'matches') or not self.matches:
+            return
+            
+        self.results_text.clear()
         
-        # Clean up threads and processes before closing
-        self.cleanup_resources()
-        
-        super().closeEvent(event)
+        for i, match in enumerate(self.matches[:100]):  # Limit to 100 matches
+            self.results_text.append(f"{match['file']}:{match['line']} (Match #{i+1})\n")
+            self.results_text.append(f"Matched term: {match['term']}\n")
+            self.results_text.append(match['context'])
+            self.results_text.append("\n---\n")
     
-    def cleanup_resources(self):
-        """Clean up resources to prevent leaks"""
+    def search_complete(self, match_count):
+        """Handle search completion with the new UI"""
+        # Reset stdout
+        sys.stdout = self.original_stdout
+        
+        # Process any remaining buffered output
+        buffered_text = self.results_buffer.get_and_clear()
+        if buffered_text:
+            cursor = self.results_text.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.insertText(buffered_text)
+            self.results_text.setTextCursor(cursor)
+            self.results_text.ensureCursorVisible()
+        
         # Stop the update timer
-        if hasattr(self, 'update_timer') and self.update_timer.isActive():
-            self.update_timer.stop()
+        self.update_timer.stop()
         
-        # Clear references to threads
-        if hasattr(self, 'search_thread'):
-            self.search_thread = None
+        # Hide progress
+        self.progress_bar.setVisible(False)
+        self.search_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         
-        if hasattr(self, 'chat_thread'):
-            self.chat_thread = None
+        # Ensure we don't process too many matches
+        if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
+            if len(self.search_thread.matches) > 100:
+                self.matches = self.search_thread.matches[:100]
+                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(self.search_thread.matches)}) to prevent memory issues.\n")
+            else:
+                self.matches = self.search_thread.matches
+        else:
+            self.matches = []
+            
+        # Update file list with unique files
+        self.update_file_list()
         
-        # Force garbage collection
+        if match_count > 0:
+            self.chat_button.setEnabled(True)
+            self.chat_action.setEnabled(True)
+            self.refine_button.setEnabled(True)
+            self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
+            self.match_count_label.setText(f"{match_count} matches")
+        else:
+            self.chat_button.setEnabled(False)
+            self.chat_action.setEnabled(False)
+            self.refine_button.setEnabled(False)
+            self.statusBar().showMessage("Search complete. No matches found.")
+            self.match_count_label.setText("0 matches")
+            
+        # Switch to results tab
+        self.tabs.setCurrentIndex(0)
+            
+        # Clear reference to search thread
+        self.search_thread = None
         gc.collect()
+    
+    def update_file_list(self):
+        """Update the file list in the tree view with matched files"""
+        self.file_list.clear()
         
-        # Explicitly clean multiprocessing resources
-        try:
-            import multiprocessing as mp
-            if hasattr(mp, 'active_children'):
-                for child in mp.active_children():
-                    try:
-                        child.terminate()
-                        child.join(0.1)
-                    except:
-                        pass
-        except:
-            pass
+        if not hasattr(self, 'matches') or not self.matches:
+            return
+            
+        # Get unique files and count matches per file
+        file_counts = {}
+        for match in self.matches:
+            file_path = match['file']
+            if file_path in file_counts:
+                file_counts[file_path] += 1
+            else:
+                file_counts[file_path] = 1
+        
+        # Add items to list
+        for file_path, count in file_counts.items():
+            item = QListWidgetItem(f"{os.path.basename(file_path)} ({count})")
+            item.setData(Qt.UserRole, file_path)
+            self.file_list.addItem(item)
+        
+        # Display all results initially
+        self.display_all_results()
     
-    def browse_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory")
-        if directory:
-            self.dir_input.setText(directory)
+    def start_search(self):
+        """Start search with updated UI elements"""
+        success = self._prepare_search(is_refine=False)
+        if success:
+            self.search_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.statusBar().showMessage("Searching...")
+            
+            # Clear file list
+            self.file_list.clear()
     
+    def stop_search(self):
+        """Stop the currently running search with updated UI"""
+        if self.search_thread and self.search_thread.is_alive():
+            # Request the search thread to stop
+            self.search_thread.stop()
+            
+            # Update UI
+            self.results_buffer.add("\n\n[Search stopped by user]\n")
+            self.stop_button.setEnabled(False)
+            self.search_button.setEnabled(True)
+            self.statusBar().showMessage("Search stopped")
+
     def _prepare_search(self, is_refine=False):
         """Common setup for both search and refine search operations"""
         directory = self.dir_input.text().strip()
@@ -1289,7 +1450,7 @@ class AISearchGUI(QMainWindow):
         self.progress_bar.setVisible(True)
         self.search_button.setEnabled(False)
         self.refine_button.setEnabled(False)
-        self.stop_action.setEnabled(True)
+        self.stop_button.setEnabled(True)
         
         # Redirect stdout to results buffer
         self.original_stdout = sys.stdout
@@ -1316,9 +1477,6 @@ class AISearchGUI(QMainWindow):
         
         return True
 
-    def start_search(self):
-        self._prepare_search(is_refine=False)
-        
     def refine_search(self):
         """Refine the search based on current results"""
         if not self.matches:
@@ -1366,130 +1524,6 @@ class AISearchGUI(QMainWindow):
     def update_terms(self, terms_text):
         # Add to buffer instead of directly to UI
         self.results_buffer.add(terms_text + "\n\n")
-    
-    @Slot(int)
-    def search_complete(self, match_count):
-        # Reset stdout
-        sys.stdout = self.original_stdout
-        
-        # Process any remaining buffered output
-        buffered_text = self.results_buffer.get_and_clear()
-        if buffered_text:
-            cursor = self.results_text.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertText(buffered_text)
-            self.results_text.setTextCursor(cursor)
-            self.results_text.ensureCursorVisible()
-        
-        # Stop the update timer
-        self.update_timer.stop()
-        
-        # Hide progress
-        self.progress_bar.setVisible(False)
-        self.search_button.setEnabled(True)
-        self.stop_action.setEnabled(False)
-        
-        # Ensure we don't process too many matches
-        if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
-            if len(self.search_thread.matches) > 100:
-                self.matches = self.search_thread.matches[:100]
-                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(self.search_thread.matches)}) to prevent memory issues.\n")
-            else:
-                self.matches = self.search_thread.matches
-        else:
-            self.matches = []
-            
-        if match_count > 0:
-            self.chat_button.setEnabled(True)
-            self.chat_action.setEnabled(True)
-            self.refine_button.setEnabled(True)  # Enable refine button when we have results
-            self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
-        else:
-            self.chat_button.setEnabled(False)
-            self.chat_action.setEnabled(False)
-            self.refine_button.setEnabled(False)  # Disable refine button when no results
-            self.statusBar().showMessage("Search complete. No matches found.")
-            
-        # Clear reference to search thread
-        self.search_thread = None
-        gc.collect()
-    
-    def clear_results(self):
-        """Clear all search results and chat history"""
-        self.results_text.clear()
-        self.chat_output.clear()
-        self.chat_input.clear()
-        self.matches = []
-        self.chat_button.setEnabled(False)
-        self.chat_action.setEnabled(False)
-        self.refine_button.setEnabled(False)  # Disable refine button when clearing
-        self.statusBar().showMessage("Results cleared")
-    
-    def start_chat(self):
-        if not self.matches:
-            self.show_error("No search results to discuss")
-            return
-        
-        question = self.chat_input.toPlainText().strip()
-        prompt = self.prompt_input.text().strip()
-        
-        # Show progress
-        self.progress_bar.setVisible(True)
-        self.chat_button.setEnabled(False)
-        
-        # Start chat thread
-        self.chat_thread = ChatThread(self, self.matches, prompt, question)
-        self.chat_thread.start()
-    
-    @Slot(str)
-    def update_chat(self, response):
-        # Store original markdown for copy functionality
-        self.chat_output.markdown_content = response
-        
-        # Convert markdown to HTML
-        try:
-            # Set up extensions based on available libraries
-            extensions = ['fenced_code', 'tables']
-            extension_configs = {}
-            
-            # Add syntax highlighting if Pygments is available
-            if PYGMENTS_AVAILABLE:
-                extensions.append('codehilite')
-                formatter = HtmlFormatter(style='monokai')
-                extension_configs['codehilite'] = {
-                    'css_class': 'highlight',
-                    'guess_lang': True,
-                    'linenums': False
-                }
-                
-                # Add Pygments CSS to document stylesheet
-                pygments_css = formatter.get_style_defs('.highlight')
-                # Combine existing stylesheet with pygments styles
-                current_css = self.chat_output.document().defaultStyleSheet() 
-                self.chat_output.document().setDefaultStyleSheet(current_css + pygments_css)
-            
-            html_content = markdown.markdown(
-                response, 
-                extensions=extensions,
-                extension_configs=extension_configs
-            )
-           
-            # Preserve clickable file references - wrap them in custom spans
-            html_content = re.sub(
-                r'([^:<>\s]+?\.[a-zA-Z0-9]+):(\d+)', 
-                r'<span class="file-reference" style="color:#3a92ea;text-decoration:underline;cursor:pointer">\1:\2</span>', 
-                html_content
-            )
-            self.chat_output.setHtml(html_content)
-        except Exception as e:
-            # Fallback to plain text if markdown conversion fails
-            self.chat_output.setPlainText(response)
-            self.statusBar().showMessage(f"Markdown rendering error: {str(e)}")
-            
-        self.progress_bar.setVisible(False)
-        self.chat_button.setEnabled(True)
-        self.chat_action.setEnabled(True)
-        self.statusBar().showMessage("Chat response received")
     
     @Slot(str)
     def show_error(self, message):
@@ -1636,25 +1670,193 @@ class AISearchGUI(QMainWindow):
         except Exception as e:
             self.show_error(f"Error opening file: {str(e)}")
 
-    def stop_search(self):
-        """Stop the currently running search"""
-        if self.search_thread and self.search_thread.is_alive():
-            # Request the search thread to stop
-            self.search_thread.stop()
-            
-            # Update UI
-            self.results_buffer.add("\n\n[Search stopped by user]\n")
-            self.stop_action.setEnabled(False)
-            self.search_button.setEnabled(True)
-            self.statusBar().showMessage("Search stopped")
-            
-            # No need to reset stdout here as that will be done in search_complete
-            # when the thread finishes
-
     def clear_file_cache(self):
         """Clear the file cache to force directory re-scan on next search"""
         aisearch.clear_file_cache()
         self.statusBar().showMessage("File cache cleared")
+
+    def browse_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory")
+        if directory:
+            self.dir_input.setText(directory)
+
+    def clear_results(self):
+        """Clear all search results and chat history"""
+        self.results_text.clear()
+        self.chat_output.clear()
+        self.chat_input.clear()
+        self.file_list.clear()
+        self.matches = []
+        self.chat_button.setEnabled(False)
+        self.chat_action.setEnabled(False)
+        self.refine_button.setEnabled(False)
+        self.match_count_label.setText("0 matches")
+        self.statusBar().showMessage("Results cleared")
+
+    def start_chat(self):
+        """Start a chat with AI about search results"""
+        if not self.matches:
+            self.show_error("No search results to discuss")
+            return
+        
+        question = self.chat_input.toPlainText().strip()
+        prompt = self.prompt_input.text().strip()
+        
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.chat_button.setEnabled(False)
+        
+        # Switch to chat tab
+        self.tabs.setCurrentIndex(1)
+        
+        # Start chat thread
+        self.chat_thread = ChatThread(self, self.matches, prompt, question)
+        self.chat_thread.start()
+    
+    @Slot(str)
+    def update_chat(self, response):
+        """Update chat output with AI response"""
+        # Store original markdown for copy functionality
+        self.chat_output.markdown_content = response
+        
+        # Convert markdown to HTML
+        try:
+            # Set up extensions based on available libraries
+            extensions = ['fenced_code', 'tables']
+            extension_configs = {}
+            
+            # Add syntax highlighting if Pygments is available
+            if PYGMENTS_AVAILABLE:
+                extensions.append('codehilite')
+                formatter = HtmlFormatter(style='monokai')
+                extension_configs['codehilite'] = {
+                    'css_class': 'highlight',
+                    'guess_lang': True,
+                    'linenums': False
+                }
+                
+                # Add Pygments CSS to document stylesheet
+                pygments_css = formatter.get_style_defs('.highlight')
+                # Combine existing stylesheet with pygments styles
+                current_css = self.chat_output.document().defaultStyleSheet() 
+                self.chat_output.document().setDefaultStyleSheet(current_css + pygments_css)
+            
+            html_content = markdown.markdown(
+                response, 
+                extensions=extensions,
+                extension_configs=extension_configs
+            )
+           
+            # Preserve clickable file references - wrap them in custom spans
+            html_content = re.sub(
+                r'([^:<>\s]+?\.[a-zA-Z0-9]+):(\d+)', 
+                r'<span class="file-reference" style="color:#3a92ea;text-decoration:underline;cursor:pointer">\1:\2</span>', 
+                html_content
+            )
+            self.chat_output.setHtml(html_content)
+        except Exception as e:
+            # Fallback to plain text if markdown conversion fails
+            self.chat_output.setPlainText(response)
+            self.statusBar().showMessage(f"Markdown rendering error: {str(e)}")
+            
+        self.progress_bar.setVisible(False)
+        self.chat_button.setEnabled(True)
+        self.chat_action.setEnabled(True)
+        self.statusBar().showMessage("Chat response received")
+
+    def loadSettings(self):
+        """Load saved settings"""
+        # Directory
+        directory = self.settings.value("directory", "")
+        if directory and os.path.exists(directory):
+            self.dir_input.setText(directory)
+            
+        # Prompt
+        prompt = self.settings.value("prompt", "")
+        self.prompt_input.setText(prompt)
+        
+        # Extensions
+        extensions = self.settings.value("extensions", "")
+        self.ext_input.setText(extensions)
+        
+        # API Keys (stored encrypted)
+        self.anthropic_key = self.settings.value("anthropic_api_key", "")
+        self.openai_key = self.settings.value("openai_api_key", "")
+        
+        # Set environment variables if API keys are available
+        if self.anthropic_key:
+            os.environ["ANTHROPIC_API_KEY"] = self.anthropic_key
+        if self.openai_key:
+            os.environ["OPENAI_API_KEY"] = self.openai_key
+        
+        # Provider
+        provider = self.settings.value("provider", "anthropic")
+        self.provider_combo.setCurrentText(provider)
+        
+        # Checkboxes
+        self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
+        self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
+        
+        # SpinBoxes
+        self.max_terms.setValue(self.settings.value("max_terms", 8, type=int))
+        self.max_workers.setValue(self.settings.value("max_workers", 4, type=int))
+        self.context_lines.setValue(self.settings.value("context_lines", 2, type=int))
+    
+    def saveSettings(self):
+        """Save current settings"""
+        self.settings.setValue("directory", self.dir_input.text())
+        self.settings.setValue("prompt", self.prompt_input.text())
+        self.settings.setValue("extensions", self.ext_input.text())
+        self.settings.setValue("case_sensitive", self.case_sensitive.isChecked())
+        self.settings.setValue("include_comments", self.include_comments.isChecked())
+        self.settings.setValue("max_terms", self.max_terms.value())
+        self.settings.setValue("max_workers", self.max_workers.value())
+        self.settings.setValue("context_lines", self.context_lines.value())
+        self.settings.setValue("provider", self.provider_combo.currentText())
+        
+        # Save API keys if present
+        if hasattr(self, 'anthropic_key') and self.anthropic_key:
+            self.settings.setValue("anthropic_api_key", self.anthropic_key)
+        if hasattr(self, 'openai_key') and self.openai_key:
+            self.settings.setValue("openai_api_key", self.openai_key)
+    
+    def closeEvent(self, event):
+        """Handle window close event"""
+        self.saveSettings()
+        
+        # Clean up threads and processes before closing
+        self.cleanup_resources()
+        
+        super().closeEvent(event)
+    
+    def cleanup_resources(self):
+        """Clean up resources to prevent leaks"""
+        # Stop the update timer
+        if hasattr(self, 'update_timer') and self.update_timer.isActive():
+            self.update_timer.stop()
+        
+        # Clear references to threads
+        if hasattr(self, 'search_thread'):
+            self.search_thread = None
+        
+        if hasattr(self, 'chat_thread'):
+            self.chat_thread = None
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Explicitly clean multiprocessing resources
+        try:
+            import multiprocessing as mp
+            if hasattr(mp, 'active_children'):
+                for child in mp.active_children():
+                    try:
+                        child.terminate()
+                        child.join(0.1)
+                    except:
+                        pass
+        except:
+            pass
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
