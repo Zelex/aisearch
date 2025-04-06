@@ -437,16 +437,23 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     match_start, match_end = match.span()
                     
                     # Find which line contains the start of the match
-                    line_idx = 0
+                    start_line_idx = 0
                     for idx, offset in enumerate(line_offsets):
                         if offset > match_start:
-                            line_idx = idx - 1
+                            start_line_idx = idx - 1
                             break
                     
-                    # Extract context
-                    start_line = max(0, line_idx - context_lines)
-                    end_line = min(len(lines), line_idx + context_lines + 1)
-                    context = "".join(lines[start_line:end_line])
+                    # Find which line contains the end of the match
+                    end_line_idx = start_line_idx
+                    for idx, offset in enumerate(line_offsets[start_line_idx+1:], start_line_idx+1):
+                        if offset >= match_end:
+                            end_line_idx = idx - 1
+                            break
+                    
+                    # Ensure we get the entire multi-line match plus context
+                    context_start = max(0, start_line_idx - context_lines)
+                    context_end = min(len(lines), end_line_idx + context_lines + 1)
+                    context = "".join(lines[context_start:context_end])
                     
                     # Get the highlighted text (may span multiple lines)
                     highlighted_text = match.group(0)
@@ -459,12 +466,12 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     
                     file_matches.append({
                         "file": path,
-                        "line": line_idx + 1,
+                        "line": start_line_idx + 1,
                         "term": term,
                         "context": context.strip(),
                         "highlighted": highlighted,
                         "multiline_match": True,
-                        "match_lines": (line_idx + 1, line_idx + highlighted_text.count('\n') + 1)
+                        "match_lines": (start_line_idx + 1, end_line_idx + 1)
                     })
         else:
             # Original single-line search mode
