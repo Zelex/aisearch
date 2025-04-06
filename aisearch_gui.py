@@ -1309,7 +1309,7 @@ class AISearchGUI(QMainWindow):
         file_tree_layout.addLayout(file_tree_header)
         
         self.file_list = QListWidget()
-        self.file_list.setAlternatingRowColors(True)
+        self.file_list.setAlternatingRowColors(False)  # Disable alternating row colors
         self.file_list.itemClicked.connect(self.on_file_selected)
         file_tree_layout.addWidget(self.file_list)
         
@@ -1472,9 +1472,7 @@ class AISearchGUI(QMainWindow):
                 color: white;
             }
             
-            QListWidget::item:alternate {
-                background-color: #2a2a2a;
-            }
+            /* Removed alternating row styles */
         """)
 
     def on_file_selected(self, item):
