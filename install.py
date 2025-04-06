@@ -17,7 +17,13 @@ REQUIREMENTS = {
     "openai": ">=1.12.0",
     "tqdm": ">=4.66.1",
     "pyside6": ">=6.6.1",
-    "markdown": ">=3.4.0"
+    "markdown": ">=3.4.0",
+    "pyre2": ">=0.3.6"  # Required for faster regex processing
+}
+
+# Optional performance requirements
+OPTIONAL_REQUIREMENTS = {
+    "pygments": ">=2.16.1"  # Syntax highlighting in GUI
 }
 
 def validate_api_key(key, provider):
@@ -30,11 +36,23 @@ def validate_api_key(key, provider):
         return bool(re.match(r'^sk-[a-zA-Z0-9]+$', key))
     return False
 
-def create_requirements_file():
-    """Create requirements.txt with pinned versions"""
+def create_requirements_file(include_optional=None):
+    """Create requirements.txt with pinned versions
+    
+    Args:
+        include_optional: List of optional packages to include
+    """
     with open("requirements.txt", "w") as f:
+        # Core requirements
         for package, version in REQUIREMENTS.items():
             f.write(f"{package}{version}\n")
+        
+        # Optional requirements if specified
+        if include_optional:
+            for package in include_optional:
+                if package in OPTIONAL_REQUIREMENTS:
+                    version = OPTIONAL_REQUIREMENTS[package]
+                    f.write(f"{package}{version}\n")
 
 def install_package(package, version):
     """Install a package with progress indicator"""
@@ -124,8 +142,21 @@ def main():
             print("Then run this script again.")
             return 0
     
-    # Create requirements.txt
-    create_requirements_file()
+    # Track optional packages to install
+    optional_packages = []
+    
+    # Ask user if they want GUI support
+    install_gui = input("\nDo you want to install GUI support? (y/n): ").lower() == 'y'
+    
+    # Ask user if they want syntax highlighting for GUI
+    install_pygments = False
+    if install_gui:
+        install_pygments = input("\nDo you want to install syntax highlighting for the GUI? (y/n): ").lower() == 'y'
+        if install_pygments:
+            optional_packages.append("pygments")
+    
+    # Create requirements.txt with selected optional packages
+    create_requirements_file(include_optional=optional_packages)
     
     # Install core dependencies
     print("\nInstalling core dependencies...")
@@ -133,22 +164,32 @@ def main():
     for package, version in REQUIREMENTS.items():
         if package != "pyside6":  # GUI dependency will be handled separately
             if not install_package(package, version):
-                success = False
-                break
+                if package == "pyre2":
+                    print("Warning: Failed to install pyre2. Multi-line regex searches will be slower.")
+                    print("Note: pyre2 may require compilation tools on some platforms.")
+                else:
+                    success = False
+                    break
     
     if not success:
         cleanup_failed_install()
         return 1
     
-    # Ask user if they want GUI support
-    install_gui = input("\nDo you want to install GUI support? (y/n): ").lower() == 'y'
-    
+    # Install GUI if requested
     if install_gui:
         print("\nInstalling GUI dependencies...")
         if not install_package("pyside6", REQUIREMENTS["pyside6"]):
             cleanup_failed_install()
             return 1
         print("\n✓ GUI dependencies installed!")
+    
+    # Install Pygments if requested
+    if install_gui and install_pygments:
+        print("\nInstalling syntax highlighting library...")
+        if not install_package("pygments", OPTIONAL_REQUIREMENTS["pygments"]):
+            print("Failed to install Pygments. Code highlighting will be disabled.")
+        else:
+            print("\n✓ Syntax highlighting library installed!")
     
     # Ask for API keys if not set
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -181,6 +222,7 @@ def main():
                     print("Invalid OpenAI API key format. Please try again.")
     
     print("\n✓ Installation complete!")
+    
     print("\nTo start AISearch:")
     print("- GUI:  ./run_aisearch.py --gui")
     print("- CLI:  ./run_aisearch.py --cli <directory> --prompt \"your search prompt\"")
