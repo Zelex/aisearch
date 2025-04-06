@@ -123,6 +123,7 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
 Focus on practical patterns that would appear in actual code.
 Generate proper regex patterns that can be used with Python's re module, not just literal strings.
 Include regex syntax for more powerful searches (e.g., \b for word boundaries, .* for any characters, etc.).
+IMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line.
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
 """
@@ -808,6 +809,7 @@ Focus on:
 3. Language-specific syntax patterns
 4. Practical regex patterns that can be used with Python's re module
 
+IMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line.
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
 """
