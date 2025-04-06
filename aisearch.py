@@ -594,6 +594,7 @@ def search_code(directory: str, search_terms: List[str],
     processed_files = 0
     displayed_locations = set()  # Track displayed file:line combinations to avoid duplicates
     unique_matches = {}  # Map to store unique matches by location (file:line)
+    context_ranges = {}  # Map of file -> list of (start_line, end_line) tuples for context ranges
 
     # Set appropriate number of workers
     if max_workers is None:
@@ -639,12 +640,60 @@ def search_code(directory: str, search_terms: List[str],
                                     location = f"{match['file']}:{start_line}-{end_line}"
                                 else:
                                     location = f"{match['file']}:{match['line']}"
+                                
+                                # Skip if we've already seen this exact location
+                                if location in displayed_locations:
+                                    continue
+                                
+                                # Check if this match is contained within the context of another match
+                                file_path = match['file']
+                                match_line = match['line']
+                                
+                                # For multiline matches, check overlap with any part of the match
+                                if multiline and match.get("multiline_match"):
+                                    start_line, end_line = match.get("match_lines", (match_line, match_line))
+                                    is_contained = False
                                     
-                                # If we haven't seen this location before
-                                if location not in displayed_locations:
-                                    displayed_locations.add(location)
-                                    unique_matches[location] = match
-                                    print(f"{location}: {match['highlighted']}")
+                                    # Check if any part of this match overlaps with existing context ranges
+                                    if file_path in context_ranges:
+                                        for ctx_start, ctx_end in context_ranges[file_path]:
+                                            # If any line of the match is within an existing context, skip it
+                                            if (start_line <= ctx_end and end_line >= ctx_start):
+                                                is_contained = True
+                                                break
+                                    
+                                    if is_contained:
+                                        continue
+                                    
+                                    # Add this match's context range to our tracking
+                                    context_start = max(1, start_line - context_lines)
+                                    context_end = end_line + context_lines
+                                    if file_path not in context_ranges:
+                                        context_ranges[file_path] = []
+                                    context_ranges[file_path].append((context_start, context_end))
+                                else:
+                                    # Single line match - check if it falls within an existing context range
+                                    is_contained = False
+                                    if file_path in context_ranges:
+                                        for ctx_start, ctx_end in context_ranges[file_path]:
+                                            if ctx_start <= match_line <= ctx_end:
+                                                is_contained = True
+                                                break
+                                    
+                                    if is_contained:
+                                        continue
+                                    
+                                    # Add this match's context range to our tracking
+                                    context_start = max(1, match_line - context_lines)
+                                    context_end = match_line + context_lines
+                                    if file_path not in context_ranges:
+                                        context_ranges[file_path] = []
+                                    context_ranges[file_path].append((context_start, context_end))
+                                
+                                # If we reach here, this is a new unique match
+                                displayed_locations.add(location)
+                                unique_matches[location] = match
+                                print(f"{location}: {match['highlighted']}")
                     except Exception as e:
                         print(f"Error processing {file_path}: {e}", file=sys.stderr)
                     finally:
