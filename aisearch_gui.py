@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit, 
                              QCheckBox, QSpinBox, QGroupBox, QSplitter, QComboBox,
                              QListWidget, QProgressBar, QMessageBox, QDialog, QMenu, QTabWidget, QListWidgetItem,
-                             QGridLayout)
+                             QGridLayout, QTextBrowser)
 from PySide6.QtCore import Qt, Signal, Slot, QSize, QSettings, QTimer, QMimeData
 from PySide6.QtGui import QFont, QColor, QTextCursor, QIcon, QTextCharFormat, QSyntaxHighlighter, QClipboard, QAction
 
@@ -459,10 +459,12 @@ class ClickableTextEdit(QTextEdit):
             table { border-collapse: collapse; }
             th, td { border: 1px solid #555; padding: 6px; }
             th { background-color: #2d2d2d; }
+            .file-reference { color: #3a92ea; text-decoration: underline; cursor: pointer; }
         """)
         
         # Store original markdown content for copying
         self.markdown_content = ""
+
     
     @staticmethod
     def is_valid_file_path(path):
@@ -870,6 +872,248 @@ class ClickableTextEdit(QTextEdit):
             if main_window:
                 main_window.statusBar().showMessage("Markdown copied to clipboard", 3000)
 
+        self.anchorClicked.connect(self.handle_link_clicked)
+        
+        # Set a stylesheet for better markdown rendering
+        self.document().setDefaultStyleSheet("""
+            code { background-color: #2d2d2d; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+            pre { background-color: #2d2d2d; padding: 10px; border-radius: 5px; overflow-x: auto; }
+            blockquote { border-left: 3px solid #555; margin-left: 0; padding-left: 10px; color: #aaa; }
+            h1, h2, h3, h4 { color: #ddd; }
+            a { color: #3a92ea; text-decoration: none; }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #555; padding: 6px; }
+            th { background-color: #2d2d2d; }
+            .file-reference { color: #3a92ea; text-decoration: underline; cursor: pointer; }
+        """)
+    
+    @staticmethod
+    def is_valid_file_path(path):
+        """Validate if a path looks like a legitimate file path across platforms"""
+        # Windows extended path (\\?\) validation - must have valid structure
+        if path.startswith('\\\\?\\'):
+            # Check for drive letter (e.g., C:)
+            if len(path) > 4 and path[4].isalpha() and path[5] == ':':
+                pass  # Valid Windows drive path
+            # Check for UNC path
+            elif len(path) > 5 and path[4:8] == 'UNC\\':
+                pass  # Valid UNC path
+            else:
+                return False
+        # Either must start with a path separator or have a drive letter
+        elif not (path.startswith('/') or path.startswith('\\') or
+                 path.startswith('./') or path.startswith('../') or
+                 re.match(r'[A-Za-z]:', path)):
+            return False
+        # Path must have at least one path separator
+        if '/' not in path and '\\' not in path:
+            return False
+        return True
+    
+    def find_main_window(self):
+        """Find the main window by traversing up the parent hierarchy"""
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, AISearchGUI):
+                return parent
+            parent = parent.parent()
+        return None
+    
+    def handle_link_clicked(self, url):
+        """Handle clicked links, especially file references"""
+        url_str = url.toString()
+        match = self.file_match_pattern.search(url_str)
+        
+        if match:
+            file_path = match.group(1)
+            line_number = match.group(2)
+            
+            if self.is_valid_file_path(file_path):
+                # Find the main window
+                main_window = self.find_main_window()
+                if main_window is None:
+                    return
+                
+                # If it's a relative path, make it absolute
+                if not os.path.isabs(file_path):
+                    # Use the current search directory as the base
+                    base_dir = main_window.dir_input.text()
+                    # Normalize path separators
+                    file_path = file_path.replace('\\', '/')
+                    base_dir = base_dir.replace('\\', '/')
+                    # Remove any leading slashes from file_path
+                    file_path = file_path.lstrip('/')
+                    # Join paths
+                    file_path = os.path.join(base_dir, file_path)
+                    # Normalize the final path
+                    file_path = os.path.normpath(file_path)
+                else:
+                    # For absolute paths, just normalize the separators
+                    file_path = os.path.normpath(file_path)
+                
+                if os.path.exists(file_path):
+                    main_window.open_file_in_editor(file_path, line_number)
+    
+    def contextMenuEvent(self, event):
+        """Custom context menu with markdown copy option"""
+        menu = QMenu(self)
+        
+        # Add standard actions
+        copy_action = QAction("Copy", self)
+        copy_action.triggered.connect(self.copy)
+        menu.addAction(copy_action)
+        
+        # Add custom actions for markdown
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            copy_markdown_action = QAction("Copy as Markdown", self)
+            copy_markdown_action.triggered.connect(self.copy_markdown_to_clipboard)
+            menu.addAction(copy_markdown_action)
+        
+        select_all_action = QAction("Select All", self)
+        select_all_action.triggered.connect(self.selectAll)
+        menu.addAction(select_all_action)
+        
+        menu.exec(event.globalPos())
+    
+    def copy_markdown_to_clipboard(self):
+        """Copy the original markdown content to clipboard"""
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            mime_data.setText(self.markdown_content)
+            clipboard.setMimeData(mime_data)
+            
+            # Find main window to show status message
+            main_window = self.find_main_window()
+            if main_window:
+                main_window.statusBar().showMessage("Markdown copied to clipboard", 3000)
+
+class FileClickableBrowser(QTextBrowser):
+    """A QTextBrowser that can process clicks on file:line references"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setOpenLinks(False)  # Don't open links automatically
+        self.setOpenExternalLinks(False)
+        self.file_match_pattern = re.compile(r'([^:]+):(\d+)')
+        self.markdown_content = ""  # For storing original markdown
+        
+        # Connect anchor clicked signal
+        self.anchorClicked.connect(self.handle_link_clicked)
+        
+        # Set a stylesheet for better markdown rendering
+        self.document().setDefaultStyleSheet("""
+            code { background-color: #2d2d2d; padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+            pre { background-color: #2d2d2d; padding: 10px; border-radius: 5px; overflow-x: auto; }
+            blockquote { border-left: 3px solid #555; margin-left: 0; padding-left: 10px; color: #aaa; }
+            h1, h2, h3, h4 { color: #ddd; }
+            a { color: #3a92ea; text-decoration: none; }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #555; padding: 6px; }
+            th { background-color: #2d2d2d; }
+            .file-reference { color: #3a92ea; text-decoration: underline; cursor: pointer; }
+        """)
+    
+    @staticmethod
+    def is_valid_file_path(path):
+        """Validate if a path looks like a legitimate file path across platforms"""
+        # Windows extended path (\\?\) validation - must have valid structure
+        if path.startswith('\\\\?\\'):
+            # Check for drive letter (e.g., C:)
+            if len(path) > 4 and path[4].isalpha() and path[5] == ':':
+                pass  # Valid Windows drive path
+            # Check for UNC path
+            elif len(path) > 5 and path[4:8] == 'UNC\\':
+                pass  # Valid UNC path
+            else:
+                return False
+        # Either must start with a path separator or have a drive letter
+        elif not (path.startswith('/') or path.startswith('\\') or
+                 path.startswith('./') or path.startswith('../') or
+                 re.match(r'[A-Za-z]:', path)):
+            return False
+        # Path must have at least one path separator
+        if '/' not in path and '\\' not in path:
+            return False
+        return True
+    
+    def find_main_window(self):
+        """Find the main window by traversing up the parent hierarchy"""
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, AISearchGUI):
+                return parent
+            parent = parent.parent()
+        return None
+    
+    def handle_link_clicked(self, url):
+        """Handle clicked links, especially file references"""
+        url_str = url.toString()
+        match = self.file_match_pattern.search(url_str)
+        
+        if match:
+            file_path = match.group(1)
+            line_number = match.group(2)
+            
+            if self.is_valid_file_path(file_path):
+                # Find the main window
+                main_window = self.find_main_window()
+                if main_window is None:
+                    return
+                
+                # If it's a relative path, make it absolute
+                if not os.path.isabs(file_path):
+                    # Use the current search directory as the base
+                    base_dir = main_window.dir_input.text()
+                    # Normalize path separators
+                    file_path = file_path.replace('\\', '/')
+                    base_dir = base_dir.replace('\\', '/')
+                    # Remove any leading slashes from file_path
+                    file_path = file_path.lstrip('/')
+                    # Join paths
+                    file_path = os.path.join(base_dir, file_path)
+                    # Normalize the final path
+                    file_path = os.path.normpath(file_path)
+                else:
+                    # For absolute paths, just normalize the separators
+                    file_path = os.path.normpath(file_path)
+                
+                if os.path.exists(file_path):
+                    main_window.open_file_in_editor(file_path, line_number)
+    
+    def contextMenuEvent(self, event):
+        """Custom context menu with markdown copy option"""
+        menu = QMenu(self)
+        
+        # Add standard actions
+        copy_action = QAction("Copy", self)
+        copy_action.triggered.connect(self.copy)
+        menu.addAction(copy_action)
+        
+        # Add custom actions for markdown
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            copy_markdown_action = QAction("Copy as Markdown", self)
+            copy_markdown_action.triggered.connect(self.copy_markdown_to_clipboard)
+            menu.addAction(copy_markdown_action)
+        
+        select_all_action = QAction("Select All", self)
+        select_all_action.triggered.connect(self.selectAll)
+        menu.addAction(select_all_action)
+        
+        menu.exec(event.globalPos())
+    
+    def copy_markdown_to_clipboard(self):
+        """Copy the original markdown content to clipboard"""
+        if hasattr(self, 'markdown_content') and self.markdown_content:
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            mime_data.setText(self.markdown_content)
+            clipboard.setMimeData(mime_data)
+            
+            # Find main window to show status message
+            main_window = self.find_main_window()
+            if main_window:
+                main_window.statusBar().showMessage("Markdown copied to clipboard", 3000)
+
 class AISearchGUI(QMainWindow):
     signal_update_status = Signal(str)
     signal_update_terms = Signal(str)
@@ -1143,7 +1387,8 @@ class AISearchGUI(QMainWindow):
         chat_splitter.addWidget(chat_input_widget)
         
         # Chat output
-        self.chat_output = ClickableTextEdit(chat_tab, use_syntax_highlighter=False)
+        self.chat_output = FileClickableBrowser(chat_tab)
+        self.chat_output.setFont(QFont("Menlo, Monaco, Courier New", 10))
         chat_splitter.addWidget(self.chat_output)
         
         # Set initial sizes
@@ -1747,12 +1992,14 @@ class AISearchGUI(QMainWindow):
                 extension_configs=extension_configs
             )
            
-            # Preserve clickable file references - wrap them in custom spans
+            # Make file references clickable by converting them to actual anchor tags
             html_content = re.sub(
                 r'([^:<>\s]+?\.[a-zA-Z0-9]+):(\d+)', 
-                r'<span class="file-reference" style="color:#3a92ea;text-decoration:underline;cursor:pointer">\1:\2</span>', 
+                r'<a href="\1:\2" class="file-reference">\1:\2</a>', 
                 html_content
             )
+            
+            # Set the HTML content
             self.chat_output.setHtml(html_content)
         except Exception as e:
             # Fallback to plain text if markdown conversion fails
