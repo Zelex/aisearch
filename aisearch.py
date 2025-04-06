@@ -104,7 +104,8 @@ def format_extension_info(extensions: List[str]) -> str:
 
 def get_search_terms_from_prompt(prompt: str, max_terms: int = 10, 
                                 extensions: Optional[List[str]] = None, 
-                                provider: str = "anthropic") -> List[str]:
+                                provider: str = "anthropic",
+                                multiline: bool = True) -> List[str]:
     """
     Generate search terms from a natural language prompt using AI.
     
@@ -113,6 +114,7 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
         max_terms: Maximum number of search terms to generate
         extensions: List of file extensions to focus on
         provider: AI provider to use ("anthropic" or "openai")
+        multiline: Whether to enable multi-line regex patterns (default: True)
         
     Returns:
         List of search terms (regex patterns)
@@ -123,7 +125,20 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
 Focus on practical patterns that would appear in actual code.
 Generate proper regex patterns that can be used with Python's re module, not just literal strings.
 Include regex syntax for more powerful searches (e.g., \b for word boundaries, .* for any characters, etc.).
+"""
+
+    if multiline:
+        system_message += """
+This search supports multi-line patterns with re.MULTILINE and re.DOTALL flags enabled.
+You CAN and SHOULD create regex patterns that match across multiple lines when appropriate.
+Use patterns like `function\\s+name.*?\\{.*?\\}` to match entire function blocks, or `class.*?\\{.*?\\}` for class definitions.
+"""
+    else:
+        system_message += """
 IMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line.
+"""
+
+    system_message += """
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
 """
@@ -357,7 +372,8 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                case_sensitive: bool, use_regex: bool, color_output: bool, 
                context_lines: int, ignore_comments: bool, 
                sanitized_patterns: Dict[str, str], 
-               compiled_patterns: Optional[List[re.Pattern]] = None) -> List[Dict[str, Any]]:
+               compiled_patterns: Optional[List[re.Pattern]] = None,
+               multiline: bool = True) -> List[Dict[str, Any]]:
     """
     Search a single file for all terms and return matches.
     
@@ -372,6 +388,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
         ignore_comments: Whether to ignore matches in comments
         sanitized_patterns: Dictionary of sanitized regex patterns
         compiled_patterns: List of pre-compiled regex patterns
+        multiline: Whether to use multi-line regex mode (default: True)
         
     Returns:
         List of match dictionaries
@@ -382,10 +399,21 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
 
-        for i, term in enumerate(search_terms):
-            flags = 0 if case_sensitive else re.IGNORECASE
+        if multiline and use_regex:
+            # Process the entire file as a single string for multiline mode
+            file_content = ''.join(lines)
+            line_offsets = [0]  # Track start positions of each line
+            current_pos = 0
+            for line in lines:
+                current_pos += len(line)
+                line_offsets.append(current_pos)
             
-            if use_regex:
+            for i, term in enumerate(search_terms):
+                # Use MULTILINE and DOTALL flags for multiline mode
+                flags = re.MULTILINE | re.DOTALL
+                if not case_sensitive:
+                    flags |= re.IGNORECASE
+                
                 if compiled_patterns and i < len(compiled_patterns):
                     pattern = compiled_patterns[i]
                 else:
@@ -403,42 +431,100 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                             pattern = re.compile(sanitized_term, flags)
                         except re.error:
                             continue  # Skip this term if it still can't be compiled
-            else:
-                pattern = None
-
-            for line_idx, line in enumerate(lines):
-                line_to_check = line.rstrip()
                 
-                # Skip comments if enabled
-                if ignore_comments and is_comment(line_to_check, file_ext):
-                    continue
+                # Find all matches in the file content
+                for match in pattern.finditer(file_content):
+                    match_start, match_end = match.span()
                     
-                if use_regex:
-                    match = pattern.search(line_to_check)
-                else:
-                    # Regular string containment
-                    match = (term in line_to_check if case_sensitive else 
-                            term.lower() in line_to_check.lower())
-                
-                if match:
-                    start = max(0, line_idx - context_lines)
-                    end = min(len(lines), line_idx + context_lines + 1)
-                    context = "".join(lines[start:end])
+                    # Find which line contains the start of the match
+                    line_idx = 0
+                    for idx, offset in enumerate(line_offsets):
+                        if offset > match_start:
+                            line_idx = idx - 1
+                            break
                     
-                    highlighted = highlight_match(
-                        line_to_check, term, pattern if use_regex else None, 
-                        color_output, case_sensitive, use_regex
-                    )
+                    # Extract context
+                    start_line = max(0, line_idx - context_lines)
+                    end_line = min(len(lines), line_idx + context_lines + 1)
+                    context = "".join(lines[start_line:end_line])
+                    
+                    # Get the highlighted text (may span multiple lines)
+                    highlighted_text = match.group(0)
+                    if color_output:
+                        color_start = '\033[91m'  # Red
+                        color_end = '\033[0m'  # Reset
+                        highlighted = f"{color_start}{highlighted_text}{color_end}"
+                    else:
+                        highlighted = highlighted_text
                     
                     file_matches.append({
                         "file": path,
                         "line": line_idx + 1,
                         "term": term,
                         "context": context.strip(),
-                        "highlighted": highlighted
+                        "highlighted": highlighted,
+                        "multiline_match": True,
+                        "match_lines": (line_idx + 1, line_idx + highlighted_text.count('\n') + 1)
                     })
+        else:
+            # Original single-line search mode
+            for i, term in enumerate(search_terms):
+                flags = 0 if case_sensitive else re.IGNORECASE
+                
+                if use_regex:
+                    if compiled_patterns and i < len(compiled_patterns):
+                        pattern = compiled_patterns[i]
+                    else:
+                        try:
+                            pattern = re.compile(term, flags)
+                        except re.error:
+                            # Try to sanitize and compile the pattern
+                            if term in sanitized_patterns:
+                                sanitized_term = sanitized_patterns[term]
+                            else:
+                                sanitized_term = sanitize_regex_pattern(term)
+                                sanitized_patterns[term] = sanitized_term
+                            
+                            try:
+                                pattern = re.compile(sanitized_term, flags)
+                            except re.error:
+                                continue  # Skip this term if it still can't be compiled
+                else:
+                    pattern = None
 
-    except Exception:
+                for line_idx, line in enumerate(lines):
+                    line_to_check = line.rstrip()
+                    
+                    # Skip comments if enabled
+                    if ignore_comments and is_comment(line_to_check, file_ext):
+                        continue
+                        
+                    if use_regex:
+                        match = pattern.search(line_to_check)
+                    else:
+                        # Regular string containment
+                        match = (term in line_to_check if case_sensitive else 
+                                term.lower() in line_to_check.lower())
+                    
+                    if match:
+                        start = max(0, line_idx - context_lines)
+                        end = min(len(lines), line_idx + context_lines + 1)
+                        context = "".join(lines[start:end])
+                        
+                        highlighted = highlight_match(
+                            line_to_check, term, pattern if use_regex else None, 
+                            color_output, case_sensitive, use_regex
+                        )
+                        
+                        file_matches.append({
+                            "file": path,
+                            "line": line_idx + 1,
+                            "term": term,
+                            "context": context.strip(),
+                            "highlighted": highlighted
+                        })
+
+    except Exception as e:
         # Just return empty list if file can't be read
         pass
         
@@ -450,7 +536,8 @@ def search_code(directory: str, search_terms: List[str],
                case_sensitive: bool = False, color_output: bool = True, 
                context_lines: int = 3, ignore_comments: bool = True, 
                max_workers: Optional[int] = None, 
-               stop_requested: Optional[Callable[[], bool]] = None) -> List[Dict[str, Any]]:
+               stop_requested: Optional[Callable[[], bool]] = None,
+               multiline: bool = True) -> List[Dict[str, Any]]:
     """
     Search code in directory for specified terms.
     
@@ -464,6 +551,7 @@ def search_code(directory: str, search_terms: List[str],
         ignore_comments: Whether to ignore matches in comments
         max_workers: Number of parallel workers (default: 2x CPU count, max 8 on Windows)
         stop_requested: Callable that returns True if search should be stopped
+        multiline: Whether to use multi-line regex mode (default: True)
         
     Returns:
         List of match dictionaries
@@ -478,6 +566,9 @@ def search_code(directory: str, search_terms: List[str],
     # Precompile regex patterns
     compiled_patterns = []
     flags = 0 if case_sensitive else re.IGNORECASE
+    if multiline:
+        flags |= re.MULTILINE | re.DOTALL
+        
     for term in search_terms:
         try:
             pattern = re.compile(term, flags)
@@ -534,7 +625,14 @@ def search_code(directory: str, search_terms: List[str],
                         if file_matches:
                             # Process matches and deduplicate
                             for match in file_matches:
-                                location = f"{match['file']}:{match['line']}"
+                                # Handle multiline matches differently
+                                if multiline and match.get("multiline_match"):
+                                    # Use file and match start-end lines as identifier
+                                    start_line, end_line = match.get("match_lines", (match["line"], match["line"]))
+                                    location = f"{match['file']}:{start_line}-{end_line}"
+                                else:
+                                    location = f"{match['file']}:{match['line']}"
+                                    
                                 # If we haven't seen this location before
                                 if location not in displayed_locations:
                                     displayed_locations.add(location)
@@ -571,7 +669,7 @@ def search_code(directory: str, search_terms: List[str],
                         search_file, path, file_ext, search_terms, 
                         case_sensitive, True, color_output, 
                         context_lines, ignore_comments, 
-                        sanitized_patterns, compiled_patterns
+                        sanitized_patterns, compiled_patterns, multiline
                     )
                     futures[future] = path
                     
@@ -620,7 +718,7 @@ def search_code(directory: str, search_terms: List[str],
                             search_file, path, file_ext, search_terms, 
                             case_sensitive, True, color_output, 
                             context_lines, ignore_comments, 
-                            sanitized_patterns, compiled_patterns
+                            sanitized_patterns, compiled_patterns, multiline
                         )
                         futures[future] = path
                         
@@ -681,10 +779,18 @@ def chat_about_matches(matches: List[Dict[str, Any]],
     # Prepare context for the AI
     context_sections = []
     for i, m in enumerate(matches[:20]):  # Limit to first 20 matches
-        context_sections.append(
-            f"{m['file']}:{m['line']} (Match #{i+1})\n"
-            f"Matched term: {m['term']}\n{m['context']}"
-        )
+        # Handle multiline matches differently
+        if m.get("multiline_match"):
+            start_line, end_line = m.get("match_lines", (m["line"], m["line"]))
+            context_sections.append(
+                f"{m['file']}:{start_line}-{end_line} (Match #{i+1})\n"
+                f"Matched term: {m['term']}\n{m['context']}"
+            )
+        else:
+            context_sections.append(
+                f"{m['file']}:{m['line']} (Match #{i+1})\n"
+                f"Matched term: {m['term']}\n{m['context']}"
+            )
     
     combined_contexts = "\n\n---\n\n".join(context_sections)
     
@@ -764,7 +870,8 @@ def clear_file_cache() -> None:
 
 def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]], 
                             max_terms: int = 10, extensions: Optional[List[str]] = None, 
-                            context_lines: int = 3, provider: str = "anthropic") -> List[str]:
+                            context_lines: int = 3, provider: str = "anthropic",
+                            multiline: bool = True) -> List[str]:
     """
     Generate refined search terms based on initial matches.
     
@@ -775,6 +882,7 @@ def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]],
         extensions: List of file extensions to focus on
         context_lines: Number of lines of context around matches (default: 3)
         provider: AI provider to use ("anthropic" or "openai")
+        multiline: Whether to enable multi-line regex patterns (default: True)
         
     Returns:
         List of refined search terms
@@ -789,7 +897,11 @@ def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]],
         middle_line_index = len(context_lines_list) // 2
         
         # Add file and line info
-        context_sections.append(f"File: {m['file']}\nLine: {m['line']}\nMatched term: {m['term']}")
+        if m.get("multiline_match"):
+            start_line, end_line = m.get("match_lines", (m["line"], m["line"]))
+            context_sections.append(f"File: {m['file']}\nLines: {start_line}-{end_line}\nMatched term: {m['term']}")
+        else:
+            context_sections.append(f"File: {m['file']}\nLine: {m['line']}\nMatched term: {m['term']}")
         
         # Add context with the matched line highlighted
         context_sections.append("Context:")
@@ -809,10 +921,14 @@ Focus on:
 3. Language-specific syntax patterns
 4. Practical regex patterns that can be used with Python's re module
 
-IMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line.
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
 """
+    
+    if multiline:
+        system_message += "\nYou can create multi-line regex patterns using the re.MULTILINE and re.DOTALL flags support."
+    else:
+        system_message += "\nIMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line."
     
     extensions_info = format_extension_info(extensions)
     
@@ -860,10 +976,17 @@ if __name__ == "__main__":
     parser.add_argument("--context", type=int, default=6, help="Lines of context before/after match")
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic", help="AI provider to use")
+    parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
     args = parser.parse_args()
     
     # Get search terms
-    search_terms = get_search_terms_from_prompt(args.prompt, args.terms, args.extensions, args.provider)
+    search_terms = get_search_terms_from_prompt(
+        args.prompt, 
+        args.terms, 
+        args.extensions, 
+        args.provider,
+        not args.single_line  # Invert the single-line flag to get multiline
+    )
     
     # Search code
     matches = search_code(
@@ -874,7 +997,8 @@ if __name__ == "__main__":
         color_output=not args.no_color,
         context_lines=args.context,
         ignore_comments=not args.include_comments,
-        max_workers=args.workers
+        max_workers=args.workers,
+        multiline=not args.single_line  # Invert the single-line flag to get multiline
     )
     
     # Chat about results if enabled
