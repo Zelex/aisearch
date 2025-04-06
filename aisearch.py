@@ -408,6 +408,19 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                 current_pos += len(line)
                 line_offsets.append(current_pos)
             
+            # Binary search function to find line index from character offset
+            def find_line_index(offset, offsets):
+                left, right = 0, len(offsets) - 1
+                while left <= right:
+                    mid = (left + right) // 2
+                    if offsets[mid] <= offset and (mid == len(offsets) - 1 or offsets[mid + 1] > offset):
+                        return mid
+                    elif offsets[mid] > offset:
+                        right = mid - 1
+                    else:
+                        left = mid + 1
+                return 0  # Default to first line if not found
+            
             for i, term in enumerate(search_terms):
                 # Use MULTILINE and DOTALL flags for multiline mode
                 flags = re.MULTILINE | re.DOTALL
@@ -436,25 +449,9 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                 for match in pattern.finditer(file_content):
                     match_start, match_end = match.span()
                     
-                    # Find which line contains the start of the match
-                    start_line_idx = 0
-                    for idx, offset in enumerate(line_offsets):
-                        if offset > match_start:
-                            start_line_idx = idx - 1
-                            break
-                    
-                    # Find which line contains the end of the match
-                    end_line_idx = start_line_idx
-                    found_end = False
-                    for idx, offset in enumerate(line_offsets[start_line_idx+1:], start_line_idx+1):
-                        if offset >= match_end:
-                            end_line_idx = idx - 1
-                            found_end = True
-                            break
-                    
-                    # If we didn't find an end line, it means the match extends to the end of the file
-                    if not found_end:
-                        end_line_idx = len(lines) - 1
+                    # Find which line contains the start and end of the match using binary search
+                    start_line_idx = find_line_index(match_start, line_offsets)
+                    end_line_idx = find_line_index(match_end - 1 if match_end > 0 else 0, line_offsets)
                     
                     # Ensure we get the entire multi-line match plus context
                     context_start = max(0, start_line_idx - context_lines)
