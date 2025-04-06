@@ -445,10 +445,16 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     
                     # Find which line contains the end of the match
                     end_line_idx = start_line_idx
+                    found_end = False
                     for idx, offset in enumerate(line_offsets[start_line_idx+1:], start_line_idx+1):
                         if offset >= match_end:
                             end_line_idx = idx - 1
+                            found_end = True
                             break
+                    
+                    # If we didn't find an end line, it means the match extends to the end of the file
+                    if not found_end:
+                        end_line_idx = len(lines) - 1
                     
                     # Ensure we get the entire multi-line match plus context
                     context_start = max(0, start_line_idx - context_lines)
