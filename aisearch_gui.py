@@ -57,7 +57,8 @@ class StreamRedirector:
 
 class SearchThread(threading.Thread):
     def __init__(self, parent, directory, prompt, extensions, case_sensitive, 
-                color_output, context_lines, ignore_comments, max_terms, max_workers, provider):
+                color_output, context_lines, ignore_comments, max_terms, max_workers, provider,
+                single_line=False):
         super().__init__()
         self.parent = parent
         self.directory = directory
@@ -74,6 +75,7 @@ class SearchThread(threading.Thread):
         self.running = True
         self.stop_requested = False
         self.provider = provider
+        self.single_line = single_line
         
     def run(self):
         try:
@@ -92,7 +94,8 @@ class SearchThread(threading.Thread):
                     max_terms=self.max_terms,
                     extensions=self.extensions,
                     context_lines=self.context_lines,
-                    provider=self.provider
+                    provider=self.provider,
+                    multiline=not self.single_line
                 )
                 self.parent.signal_update_status.emit("Generated refined search terms based on current results...")
             else:
@@ -100,7 +103,8 @@ class SearchThread(threading.Thread):
                     self.prompt,
                     max_terms=self.max_terms,
                     extensions=self.extensions,
-                    provider=self.provider
+                    provider=self.provider,
+                    multiline=not self.single_line
                 )
             
             # Display terms
@@ -128,7 +132,8 @@ class SearchThread(threading.Thread):
                     context_lines=self.context_lines,
                     ignore_comments=self.ignore_comments,
                     max_workers=self.max_workers,
-                    stop_requested=lambda: self.stop_requested  # Pass a callable to check if stop was requested
+                    stop_requested=lambda: self.stop_requested,  # Pass a callable to check if stop was requested
+                    multiline=not self.single_line
                 )
                 
                 # Truncate matches if too many
@@ -1202,6 +1207,13 @@ class AISearchGUI(QMainWindow):
         self.include_comments = QCheckBox("Include Comments")
         self.include_comments.setChecked(True)
         options_layout.addWidget(self.include_comments)
+        
+        # Add Single Line Mode checkbox
+        self.single_line_mode = QCheckBox("Single Line Mode")
+        self.single_line_mode.setChecked(False)
+        self.single_line_mode.setToolTip("When checked, searches line-by-line instead of supporting multi-line patterns")
+        options_layout.addWidget(self.single_line_mode)
+        
         search_layout.addLayout(options_layout)
         
         # Terms and workers
@@ -1713,7 +1725,8 @@ class AISearchGUI(QMainWindow):
             not self.include_comments.isChecked(),
             self.max_terms.value(),
             self.max_workers.value(),
-            provider
+            provider,
+            self.single_line_mode.isChecked()
         )
         self.search_thread.start()
         
@@ -2043,6 +2056,7 @@ class AISearchGUI(QMainWindow):
         # Checkboxes
         self.case_sensitive.setChecked(self.settings.value("case_sensitive", True, type=bool))
         self.include_comments.setChecked(self.settings.value("include_comments", True, type=bool))
+        self.single_line_mode.setChecked(self.settings.value("single_line_mode", False, type=bool))
         
         # SpinBoxes
         self.max_terms.setValue(self.settings.value("max_terms", 8, type=int))
@@ -2051,21 +2065,33 @@ class AISearchGUI(QMainWindow):
     
     def saveSettings(self):
         """Save current settings"""
+        # Directory
         self.settings.setValue("directory", self.dir_input.text())
+        
+        # Prompt
         self.settings.setValue("prompt", self.prompt_input.text())
+        
+        # Extensions
         self.settings.setValue("extensions", self.ext_input.text())
+        
+        # API Keys
+        if hasattr(self, 'anthropic_key'):
+            self.settings.setValue("anthropic_api_key", self.anthropic_key)
+        if hasattr(self, 'openai_key'):
+            self.settings.setValue("openai_api_key", self.openai_key)
+        
+        # Provider
+        self.settings.setValue("provider", self.provider_combo.currentText())
+        
+        # Checkboxes
         self.settings.setValue("case_sensitive", self.case_sensitive.isChecked())
         self.settings.setValue("include_comments", self.include_comments.isChecked())
+        self.settings.setValue("single_line_mode", self.single_line_mode.isChecked())
+        
+        # SpinBoxes
         self.settings.setValue("max_terms", self.max_terms.value())
         self.settings.setValue("max_workers", self.max_workers.value())
         self.settings.setValue("context_lines", self.context_lines.value())
-        self.settings.setValue("provider", self.provider_combo.currentText())
-        
-        # Save API keys if present
-        if hasattr(self, 'anthropic_key') and self.anthropic_key:
-            self.settings.setValue("anthropic_api_key", self.anthropic_key)
-        if hasattr(self, 'openai_key') and self.openai_key:
-            self.settings.setValue("openai_api_key", self.openai_key)
     
     def closeEvent(self, event):
         """Handle window close event"""
