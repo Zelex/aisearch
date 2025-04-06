@@ -87,7 +87,8 @@ class SearchThread(threading.Thread):
             self.parent.signal_update_status.emit(f"Querying {self.provider.title()} for search terms...")
             
             # Check if this is a refined search (we have previous matches)
-            if hasattr(self.parent, 'matches') and self.parent.matches:
+            # This will be true if the parent has matches - for refined searches
+            if hasattr(self.parent, 'matches') and self.parent.matches and len(self.parent.matches) > 0:
                 self.search_terms = aisearch.get_refined_search_terms(
                     self.prompt,
                     self.parent.matches,
@@ -1597,13 +1598,13 @@ class AISearchGUI(QMainWindow):
         
         if match_count > 0:
             self.chat_button.setEnabled(True)
-            self.chat_action.setEnabled(True)
+            # Remove chat_action reference
             self.refine_button.setEnabled(True)
             self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
             self.match_count_label.setText(f"{match_count} matches")
         else:
             self.chat_button.setEnabled(False)
-            self.chat_action.setEnabled(False)
+            # Remove chat_action reference
             self.refine_button.setEnabled(False)
             self.statusBar().showMessage("Search complete. No matches found.")
             self.match_count_label.setText("0 matches")
@@ -1699,7 +1700,10 @@ class AISearchGUI(QMainWindow):
         self.results_buffer = ResultsBuffer()
         
         # Force garbage collection
-        if not is_refine:
+        previous_matches = None
+        if is_refine:
+            previous_matches = self.matches
+        else:
             self.matches = []
         gc.collect()
         
@@ -2021,7 +2025,7 @@ class AISearchGUI(QMainWindow):
             
         self.progress_bar.setVisible(False)
         self.chat_button.setEnabled(True)
-        self.chat_action.setEnabled(True)
+        # Remove chat_action reference
         self.statusBar().showMessage("Chat response received")
 
     def loadSettings(self):
