@@ -3,12 +3,18 @@ import re
 import sys
 import argparse
 import concurrent.futures
+import time
 from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
 
 # Third-party imports
 import anthropic
 import openai
 from tqdm import tqdm
+try:
+    import timeout_decorator
+except ImportError:
+    print("Warning: timeout_decorator module not found. Regex timeouts will be disabled.")
+    timeout_decorator = None
 
 # Cache for file lists when directory and extensions don't change
 _file_cache = {}
@@ -139,6 +145,15 @@ IMPORTANT: Each line is processed individually, so DO NOT create multi-line rege
 """
 
     system_message += """
+IMPORTANT EFFICIENCY GUIDELINES:
+- Avoid nested .* or .*? patterns which cause catastrophic backtracking
+- Limit pattern complexity - simpler is faster and more reliable
+- Use atomic groups (?>...) where possible
+- Prefer bounded quantifiers {0,100} instead of * or +
+- Prefer character classes [a-z] over wildcard .
+- Add anchors (^ $) when appropriate to limit search space
+- For function/class definitions, use more specific start/end markers rather than greedy matches
+
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
 """
@@ -421,6 +436,45 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         left = mid + 1
                 return 0  # Default to first line if not found
             
+            # Define a safe regex search function with timeout
+            def safe_regex_search(pattern, text, max_time=2):
+                # If timeout_decorator is available, use it
+                if timeout_decorator:
+                    @timeout_decorator.timeout(max_time, use_signals=False)
+                    def search_with_timeout():
+                        return list(pattern.finditer(text))
+                    
+                    try:
+                        return search_with_timeout()
+                    except timeout_decorator.TimeoutError:
+                        print(f"Warning: Regex timeout after {max_time}s for pattern: {pattern.pattern}")
+                        return []
+                else:
+                    # Fallback to a manual timeout implementation
+                    start_time = time.time()
+                    results = []
+                    
+                    # Create an iterator but process with timeout checks
+                    it = pattern.finditer(text)
+                    while True:
+                        try:
+                            # Check timeout before each iteration
+                            if time.time() - start_time > max_time:
+                                print(f"Warning: Regex timeout after {max_time}s for pattern: {pattern.pattern}")
+                                break
+                                
+                            # Get next match with a small timeout
+                            match = next(it)
+                            results.append(match)
+                            
+                        except StopIteration:
+                            break
+                        except Exception as e:
+                            print(f"Error in regex search: {e}")
+                            break
+                            
+                    return results
+            
             for i, term in enumerate(search_terms):
                 # Use MULTILINE and DOTALL flags for multiline mode
                 flags = re.MULTILINE | re.DOTALL
@@ -445,8 +499,8 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         except re.error:
                             continue  # Skip this term if it still can't be compiled
                 
-                # Find all matches in the file content
-                for match in pattern.finditer(file_content):
+                # Find all matches in the file content using safe search
+                for match in safe_regex_search(pattern, file_content):
                     match_start, match_end = match.span()
                     
                     # Find which line contains the start and end of the match using binary search
@@ -988,6 +1042,17 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
         system_message += "\nYou can create multi-line regex patterns using the re.MULTILINE and re.DOTALL flags support."
     else:
         system_message += "\nIMPORTANT: Each line is processed individually, so DO NOT create multi-line regex patterns. All patterns must match on a single line."
+    
+    system_message += """
+IMPORTANT EFFICIENCY GUIDELINES:
+- Avoid nested .* or .*? patterns which cause catastrophic backtracking
+- Limit pattern complexity - simpler is faster and more reliable
+- Use atomic groups (?>...) where possible
+- Prefer bounded quantifiers {0,100} instead of * or +
+- Prefer character classes [a-z] over wildcard .
+- Add anchors (^ $) when appropriate to limit search space
+- For function/class definitions, use more specific start/end markers rather than greedy matches
+"""
     
     extensions_info = format_extension_info(extensions)
     
