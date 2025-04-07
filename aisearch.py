@@ -168,7 +168,7 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
             system=system_message,
             thinking={
                 "type": "enabled",
-                "budget_tokens": 2048
+                "budget_tokens": 1024
             },
             messages=[{
                 "role": "user",

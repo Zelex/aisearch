@@ -122,7 +122,6 @@ class SearchThread(threading.Thread):
             
             # Process in batches
             all_matches = []
-            MAX_RESULTS = 100
             
             try:
                 all_matches = aisearch.search_code(
@@ -138,15 +137,10 @@ class SearchThread(threading.Thread):
                     multiline=not self.single_line
                 )
                 
-                # Truncate matches if too many
-                if len(all_matches) > MAX_RESULTS:
-                    self.matches = all_matches[:MAX_RESULTS]
-                    self.parent.signal_update_status.emit(f"Limited to {MAX_RESULTS} matches to prevent memory issues")
-                else:
-                    self.matches = all_matches
+                self.matches = all_matches
             except Exception as e:
                 self.parent.signal_error.emit(f"Search error: {str(e)}")
-                self.matches = all_matches[:50] if len(all_matches) > 50 else all_matches
+                self.matches = all_matches
             
             self.parent.signal_search_complete.emit(len(self.matches))
         except Exception as e:
@@ -1537,7 +1531,7 @@ class AISearchGUI(QMainWindow):
             
         self.results_text.clear()
         
-        for i, match in enumerate(self.matches[:100]):  # Limit to 100 matches
+        for i, match in enumerate(self.matches):
             self.results_text.append(f"{match['file']}:{match['line']} (Match #{i+1})\n")
             self.results_text.append(f"Matched term: {match['term']}\n")
             self.results_text.append(match['context'])
@@ -1565,13 +1559,9 @@ class AISearchGUI(QMainWindow):
         self.search_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         
-        # Ensure we don't process too many matches
+        # Get matches from search thread
         if hasattr(self, 'search_thread') and hasattr(self.search_thread, 'matches'):
-            if len(self.search_thread.matches) > 100:
-                self.matches = self.search_thread.matches[:100]
-                self.results_text.insertPlainText(f"\n\nLimiting displayed matches to 100 (out of {len(self.search_thread.matches)}) to prevent memory issues.\n")
-            else:
-                self.matches = self.search_thread.matches
+            self.matches = self.search_thread.matches
         else:
             self.matches = []
             
@@ -1582,7 +1572,7 @@ class AISearchGUI(QMainWindow):
             self.chat_button.setEnabled(True)
             # Remove chat_action reference
             self.refine_button.setEnabled(True)
-            self.statusBar().showMessage(f"Search complete. Found {match_count} matches (displaying up to 100).")
+            self.statusBar().showMessage(f"Search complete. Found {match_count} matches.")
             self.match_count_label.setText(f"{match_count} matches")
         else:
             self.chat_button.setEnabled(False)
