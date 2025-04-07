@@ -127,6 +127,10 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
 Focus on practical patterns that would appear in actual code.
 Generate proper regex patterns that can be used with Python's re module, not just literal strings.
 Include regex syntax for more powerful searches (e.g., \b for word boundaries, .* for any characters, etc.).
+
+IMPORTANT: Think about how your search terms will work TOGETHER to discover the underlying search intent.
+Create a diverse set of patterns that capture different aspects of the search and complement each other.
+Some terms should be specific, others more general to ensure good coverage of potential matches.
 """
 
     if multiline:
@@ -1023,6 +1027,10 @@ Focus on:
 2. Related code patterns that might be relevant
 3. Language-specific syntax patterns
 4. Practical regex patterns that can be used with Python's re module
+
+IMPORTANT: Think about how your search terms will work TOGETHER to discover the underlying search intent.
+Create a diverse set of patterns that capture different aspects of the search and complement each other.
+Some terms should be specific to match known patterns, others more general to discover related code.
 
 Keep your response VERY brief - just list the search terms, one per line.
 Respond with ONLY the search terms, with no additional text, explanations, or numbering.
