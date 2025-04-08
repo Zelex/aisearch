@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
 # Third-party imports
 import anthropic
 import openai
-import re2
 from tqdm import tqdm
 
 # Cache for file lists when directory and extensions don't change
@@ -241,9 +240,9 @@ def sanitize_regex_pattern(pattern: str) -> str:
     return pattern
 
 
-def compile_regex(pattern: str, flags: int) -> Union[re.Pattern, re2.Pattern]:
+def compile_regex(pattern: str, flags: int) -> re.Pattern:
     """
-    Compile a regex pattern using re2 for better performance.
+    Compile a regex pattern using the standard re module.
     
     Args:
         pattern: Regular expression pattern to compile
@@ -252,21 +251,10 @@ def compile_regex(pattern: str, flags: int) -> Union[re.Pattern, re2.Pattern]:
     Returns:
         Compiled regex pattern
     """
-    # Convert re flags to re2 flags (re2 doesn't support all flags)
-    re2_flags = 0
-    if flags & re.IGNORECASE:
-        re2_flags |= re2.IGNORECASE
-    if flags & re.MULTILINE:
-        re2_flags |= re2.MULTILINE
-    
-    # Try re2 first, fall back to re if pattern is unsupported
-    try:
-        return re2.compile(pattern, re2_flags)
-    except re2.error:
-        return re.compile(pattern, flags)
+    return re.compile(pattern, flags)
 
 
-def highlight_match(line: str, term: str, pattern: Optional[Union[re.Pattern, re2.Pattern]], 
+def highlight_match(line: str, term: str, pattern: Optional[re.Pattern], 
                    color_output: bool, case_sensitive: bool, use_regex: bool) -> str:
     """
     Highlight matching text in console output.
@@ -412,7 +400,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                case_sensitive: bool, use_regex: bool, color_output: bool, 
                context_lines: int, ignore_comments: bool, 
                sanitized_patterns: Dict[str, str], 
-               compiled_patterns: Optional[List[Union[re.Pattern, re2.Pattern]]] = None,
+               compiled_patterns: Optional[List[re.Pattern]] = None,
                multiline: bool = True) -> List[Dict[str, Any]]:
     """
     Search a single file for all terms and return matches.
@@ -461,7 +449,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         left = mid + 1
                 return 0  # Default to first line if not found
             
-            # Simple function to find matches, using re2 which is already fast
+            # Simple function to find matches
             def find_matches(pattern, text):
                 try:
                     return list(pattern.finditer(text))
@@ -480,7 +468,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                 else:
                     try:
                         pattern = compile_regex(term, flags)
-                    except (re.error, re2.error):
+                    except re.error:
                         # Try to sanitize and compile the pattern
                         if term in sanitized_patterns:
                             sanitized_term = sanitized_patterns[term]
@@ -490,7 +478,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         
                         try:
                             pattern = compile_regex(sanitized_term, flags)
-                        except (re.error, re2.error):
+                        except re.error:
                             continue  # Skip this term if it still can't be compiled
                 
                 # Find all matches in the file content
@@ -535,7 +523,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     else:
                         try:
                             pattern = compile_regex(term, flags)
-                        except (re.error, re2.error):
+                        except re.error:
                             # Try to sanitize and compile the pattern
                             if term in sanitized_patterns:
                                 sanitized_term = sanitized_patterns[term]
@@ -545,7 +533,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                             
                             try:
                                 pattern = compile_regex(sanitized_term, flags)
-                            except (re.error, re2.error):
+                            except re.error:
                                 continue  # Skip this term if it still can't be compiled
                 else:
                     pattern = None
@@ -630,12 +618,12 @@ def search_code(directory: str, search_terms: List[str],
     for term in search_terms:
         try:
             pattern = compile_regex(term, flags)
-        except (re.error, re2.error):
+        except re.error:
             sanitized_term = sanitize_regex_pattern(term)
             sanitized_patterns[term] = sanitized_term
             try:
                 pattern = compile_regex(sanitized_term, flags)
-            except (re.error, re2.error):
+            except re.error:
                 # If compilation still fails, use a pattern that won't match anything
                 pattern = re.compile(r'(?!x)x')  # This pattern always fails to match
         compiled_patterns.append(pattern)
