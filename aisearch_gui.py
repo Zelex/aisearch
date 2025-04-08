@@ -5,7 +5,6 @@ import atexit
 import gc
 import time
 import re
-import re2
 import subprocess
 import platform
 import markdown  # Add markdown library
@@ -225,11 +224,8 @@ class CodeSyntaxHighlighter(QSyntaxHighlighter):
         self.setup_highlighting_rules()
     
     def compile_regex(self, pattern_str):
-        """Compile regex pattern using re2 for performance"""
-        try:
-            return re2.compile(pattern_str)
-        except re2.error:
-            return re.compile(pattern_str)
+        """Compile regex pattern using re"""
+        return re.compile(pattern_str)
         
     def set_language(self, file_path):
         """Set the language based on file extension"""
