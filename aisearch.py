@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
 # Third-party imports
 import anthropic
 import openai
+import regex
 from tqdm import tqdm
 
 # Cache for file lists when directory and extensions don't change
@@ -235,14 +236,14 @@ def sanitize_regex_pattern(pattern: str) -> str:
     problematic_chars = ['*', '+', '?', '|', '^', '$', '.']
     for char in problematic_chars:
         # Only escape if not already escaped
-        pattern = re.sub(r'(?<!\\)' + re.escape(char), f'\\{char}', pattern)
+        pattern = regex.sub(r'(?<!\\)' + regex.escape(char), f'\\{char}', pattern)
     
     return pattern
 
 
-def compile_regex(pattern: str, flags: int) -> re.Pattern:
+def compile_regex(pattern: str, flags: int) -> regex.Pattern:
     """
-    Compile a regex pattern using the standard re module.
+    Compile a regex pattern using the regex module which offers better features.
     
     Args:
         pattern: Regular expression pattern to compile
@@ -251,10 +252,19 @@ def compile_regex(pattern: str, flags: int) -> re.Pattern:
     Returns:
         Compiled regex pattern
     """
-    return re.compile(pattern, flags)
+    # Convert re flags to regex flags
+    regex_flags = 0
+    if flags & re.IGNORECASE:
+        regex_flags |= regex.IGNORECASE
+    if flags & re.MULTILINE:
+        regex_flags |= regex.MULTILINE
+    if flags & re.DOTALL:
+        regex_flags |= regex.DOTALL
+    
+    return regex.compile(pattern, regex_flags)
 
 
-def highlight_match(line: str, term: str, pattern: Optional[re.Pattern], 
+def highlight_match(line: str, term: str, pattern: Optional[regex.Pattern], 
                    color_output: bool, case_sensitive: bool, use_regex: bool) -> str:
     """
     Highlight matching text in console output.
@@ -282,8 +292,8 @@ def highlight_match(line: str, term: str, pattern: Optional[re.Pattern],
     if use_regex and pattern:
         return pattern.sub(replace, line)
     else:
-        flags = 0 if case_sensitive else re.IGNORECASE
-        return re.sub(f'({re.escape(term)})', f'{color_start}\\1{color_end}', line, flags=flags)
+        flags = 0 if case_sensitive else regex.IGNORECASE
+        return regex.sub(f'({regex.escape(term)})', f'{color_start}\\1{color_end}', line, flags=flags)
 
 
 def is_comment(line: str, file_ext: str) -> bool:
@@ -302,7 +312,7 @@ def is_comment(line: str, file_ext: str) -> bool:
     
     # C-style comments
     if file_ext in ['.c', '.cpp', '.h', '.hpp', '.java', '.js', '.ts', '.jsx', '.tsx', '.cs', '.php', '.swift']:
-        if line.startswith('//') or line.startswith('/*') or line.endswith('*/') or re.match(r'^\s*\*', line):
+        if line.startswith('//') or line.startswith('/*') or line.endswith('*/') or regex.match(r'^\s*\*', line):
             return True
     
     # Python, Ruby, Shell comments
@@ -400,7 +410,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                case_sensitive: bool, use_regex: bool, color_output: bool, 
                context_lines: int, ignore_comments: bool, 
                sanitized_patterns: Dict[str, str], 
-               compiled_patterns: Optional[List[re.Pattern]] = None,
+               compiled_patterns: Optional[List[regex.Pattern]] = None,
                multiline: bool = True) -> List[Dict[str, Any]]:
     """
     Search a single file for all terms and return matches.
@@ -468,7 +478,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                 else:
                     try:
                         pattern = compile_regex(term, flags)
-                    except re.error:
+                    except regex.error:
                         # Try to sanitize and compile the pattern
                         if term in sanitized_patterns:
                             sanitized_term = sanitized_patterns[term]
@@ -478,7 +488,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         
                         try:
                             pattern = compile_regex(sanitized_term, flags)
-                        except re.error:
+                        except regex.error:
                             continue  # Skip this term if it still can't be compiled
                 
                 # Find all matches in the file content
@@ -523,7 +533,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     else:
                         try:
                             pattern = compile_regex(term, flags)
-                        except re.error:
+                        except regex.error:
                             # Try to sanitize and compile the pattern
                             if term in sanitized_patterns:
                                 sanitized_term = sanitized_patterns[term]
@@ -533,7 +543,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                             
                             try:
                                 pattern = compile_regex(sanitized_term, flags)
-                            except re.error:
+                            except regex.error:
                                 continue  # Skip this term if it still can't be compiled
                 else:
                     pattern = None
@@ -618,14 +628,14 @@ def search_code(directory: str, search_terms: List[str],
     for term in search_terms:
         try:
             pattern = compile_regex(term, flags)
-        except re.error:
+        except regex.error:
             sanitized_term = sanitize_regex_pattern(term)
             sanitized_patterns[term] = sanitized_term
             try:
                 pattern = compile_regex(sanitized_term, flags)
-            except re.error:
+            except regex.error:
                 # If compilation still fails, use a pattern that won't match anything
-                pattern = re.compile(r'(?!x)x')  # This pattern always fails to match
+                pattern = regex.compile(r'(?!x)x')  # This pattern always fails to match
         compiled_patterns.append(pattern)
     
     # Setup tracking variables

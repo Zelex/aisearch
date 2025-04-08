@@ -17,7 +17,8 @@ REQUIREMENTS = {
     "openai": ">=1.12.0",
     "tqdm": ">=4.66.1",
     "pyside6": ">=6.6.1",
-    "markdown": ">=3.4.0"
+    "markdown": ">=3.4.0",
+    "regex": ">=2022.1.18"
 }
 
 # Optional performance requirements
@@ -163,9 +164,9 @@ def main():
     for package, version in REQUIREMENTS.items():
         if package != "pyside6":  # GUI dependency will be handled separately
             if not install_package(package, version):
-                if package == "pyre2":
-                    print("Warning: Failed to install pyre2. Multi-line regex searches will be slower.")
-                    print("Note: pyre2 may require compilation tools on some platforms.")
+                if package == "regex":
+                    print("Warning: Failed to install regex. Falling back to standard re module.")
+                    print("Note: Search performance may be slower with complex patterns.")
                 else:
                     success = False
                     break
