@@ -17,8 +17,7 @@ REQUIREMENTS = {
     "openai": ">=1.12.0",
     "tqdm": ">=4.66.1",
     "pyside6": ">=6.6.1",
-    "markdown": ">=3.4.0",
-    "pyre2": ">=0.3.6"  # Required for faster regex processing
+    "markdown": ">=3.4.0"
 }
 
 # Optional performance requirements
