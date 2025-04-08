@@ -2,6 +2,8 @@
 
 AISearch is a powerful tool that leverages Claude 3.7 Sonnet or o3-mini to generate intelligent search patterns for codebases. It transforms natural language descriptions into effective regex search patterns, searches your code, and allows you to chat with AI about the results.
 
+**[Download Latest Release](https://github.com/Zelex/aisearch/releases/latest)**
+
 ![AISearch Screenshot](https://i.imgur.com/hAwBneM.png)
 ![AISearch Chat Screenshot](https://i.imgur.com/lXH9R5B.png)
 
