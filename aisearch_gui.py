@@ -151,13 +151,14 @@ class SearchThread(threading.Thread):
         self.stop_requested = True
 
 class ChatThread(threading.Thread):
-    def __init__(self, parent, matches, prompt, question):
+    def __init__(self, parent, matches, prompt, question, chat_history=None):
         super().__init__()
         self.parent = parent
         self.matches = matches
         self.prompt = prompt
         self.question = question
         self.provider = parent.provider_combo.currentText()
+        self.chat_history = chat_history or []
         
     def run(self):
         try:
@@ -181,16 +182,35 @@ class ChatThread(threading.Thread):
             4. Clear, factual analysis based only on the provided code
 
             When referring to matches, ALWAYS use the file path and line number (e.g., 'In file.cpp:123') rather than match numbers.
-            Keep your responses concise and to the point."""
+            Keep your responses concise and to the point.
             
-            messages = [
-                {"role": "user", "content": f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"}
-            ]
+            IMPORTANT: Always directly address the user's questions. If they ask a specific question about the code or results,
+            make sure to answer that question directly rather than continuing your previous analysis."""
             
-            if self.question:
-                messages.append({"role": "user", "content": self.question})
+            # Prepare messages
+            if not self.chat_history:
+                # First message in the conversation
+                messages = [
+                    {"role": "user", "content": f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"}
+                ]
+                
+                if self.question:
+                    messages.append({"role": "user", "content": self.question})
+                else:
+                    messages.append({"role": "user", "content": "Please analyze these findings."})
             else:
-                messages.append({"role": "user", "content": "Please analyze these findings."})
+                # We have existing chat history
+                # First message always contains the search context
+                messages = [
+                    {"role": "user", "content": f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"}
+                ]
+                # Add a separator message
+                messages.append({"role": "assistant", "content": "I'll analyze these code search results. What would you like to know?"})
+                # Add the conversation history (limited to last 10 exchanges to prevent context overflow)
+                messages.extend(self.chat_history[-10:])
+                # Add the new question
+                if self.question:
+                    messages.append({"role": "user", "content": self.question})
             
             if self.provider == "anthropic":
                 response = client.messages.create(
@@ -210,7 +230,19 @@ class ChatThread(threading.Thread):
                 )
                 response_text = response.choices[0].message.content
             
-            self.parent.signal_chat_response.emit(response_text)
+            # Save question and response to history
+            if self.question:
+                new_history = self.chat_history + [
+                    {"role": "user", "content": self.question},
+                    {"role": "assistant", "content": response_text}
+                ]
+            else:
+                new_history = self.chat_history + [
+                    {"role": "assistant", "content": response_text}
+                ]
+            
+            # Use tuple to send both response and history
+            self.parent.signal_chat_response.emit((response_text, new_history))
             
         except Exception as e:
             self.parent.signal_error.emit(str(e))
@@ -1099,13 +1131,14 @@ class AISearchGUI(QMainWindow):
     signal_update_terms = Signal(str)
     signal_search_complete = Signal(int)
     signal_error = Signal(str)
-    signal_chat_response = Signal(str)
+    signal_chat_response = Signal(object)  # Changed to object to support tuple
     
     def __init__(self):
         super().__init__()
         self.matches = []
         self.search_thread = None
         self.chat_thread = None
+        self.chat_history = []  # Add chat history
         self.settings = QSettings("AICodeSearch", "AISearchGUI")
         self.results_buffer = ResultsBuffer()
         self.update_timer = QTimer(self)
@@ -1917,6 +1950,7 @@ class AISearchGUI(QMainWindow):
         self.chat_input.clear()
         self.file_list.clear()
         self.matches = []
+        self.chat_history = []  # Clear chat history
         self.chat_button.setEnabled(False)
         self.chat_action.setEnabled(False)
         self.refine_button.setEnabled(False)
@@ -1939,16 +1973,37 @@ class AISearchGUI(QMainWindow):
         # Switch to chat tab
         self.tabs.setCurrentIndex(1)
         
-        # Start chat thread
-        self.chat_thread = ChatThread(self, self.matches, prompt, question)
+        # Start chat thread with history
+        self.chat_thread = ChatThread(self, self.matches, prompt, question, self.chat_history)
         self.chat_thread.start()
     
-    @Slot(str)
-    def update_chat(self, response):
+    @Slot(object)
+    def update_chat(self, response_data):
         """Update chat output with AI response"""
+        # Unpack response and history
+        if isinstance(response_data, tuple):
+            response, self.chat_history = response_data
+        else:
+            # For backward compatibility
+            response = response_data
+        
         # Store original markdown for copy functionality
         self.chat_output.markdown_content = response
         
+        # Clear previous content and show only the latest exchange
+        self.chat_output.clear()
+        
+        # Add user question to the display if it exists
+        if self.chat_input.toPlainText().strip():
+            # Format with user question and AI response
+            content = f"**You:** {self.chat_input.toPlainText().strip()}\n\n**AI:**\n\n{response}"
+            self.chat_output.setMarkdown(content)
+            # Clear input after sending
+            self.chat_input.clear()
+        else:
+            # Initial analysis (no user question)
+            self.chat_output.setMarkdown(response)
+            
         # Convert markdown to HTML
         try:
             # Set up extensions based on available libraries
@@ -1972,7 +2027,7 @@ class AISearchGUI(QMainWindow):
                 self.chat_output.document().setDefaultStyleSheet(current_css + pygments_css)
             
             html_content = markdown.markdown(
-                response, 
+                self.chat_output.toMarkdown(), 
                 extensions=extensions,
                 extension_configs=extension_configs
             )
@@ -1986,15 +2041,11 @@ class AISearchGUI(QMainWindow):
             
             # Set the HTML content
             self.chat_output.setHtml(html_content)
-        except Exception as e:
-            # Fallback to plain text if markdown conversion fails
-            self.chat_output.setPlainText(response)
-            self.statusBar().showMessage(f"Markdown rendering error: {str(e)}")
-            
-        self.progress_bar.setVisible(False)
-        self.chat_button.setEnabled(True)
-        # Remove chat_action reference
-        self.statusBar().showMessage("Chat response received")
+        
+        # Hide progress and enable chat button
+        finally:
+            self.progress_bar.setVisible(False)
+            self.chat_button.setEnabled(True)
 
     def loadSettings(self):
         """Load saved settings"""

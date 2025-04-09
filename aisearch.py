@@ -907,23 +907,45 @@ Focus on explaining:
 4. Clear, factual analysis based only on the provided code
 
 When referring to matches, ALWAYS use the FULL file path and line number (e.g., '/path/to/file.cpp:123') rather than match numbers or just the filename.
-Keep your responses concise and to the point."""
+Keep your responses concise and to the point.
+
+IMPORTANT: Always directly address the user's questions. If they ask a specific question about the code or results, make sure to answer that question directly rather than continuing your previous analysis.
+"""
 
     print(f"\nEntering chat mode. {len(matches)} matches found for: '{original_prompt}'")
     print("Ask questions about the search results or type 'exit' to quit.\n")
 
-    history = [{
-        "role": "user",
-        "content": f"These are code search results for: '{original_prompt}'\n\n{combined_contexts}\n\nPlease analyze these findings."
-    }]
+    # Store the initial search results as a fixed context that will always be included
+    search_context = f"These are code search results for: '{original_prompt}'\n\n{combined_contexts}"
+    
+    # Keep track of user-assistant exchanges separately from the fixed context
+    exchanges = []
 
+    # Initial analysis request
+    initial_prompt = "Please analyze these findings."
+    
     while True:
         user_input = input("\nYou: ")
         if user_input.lower() in {"exit", "quit"}:
             print("Exiting chat.")
             break
 
-        history.append({"role": "user", "content": user_input})
+        # Add user message to exchanges
+        exchanges.append({"role": "user", "content": user_input})
+        
+        # Limit exchanges to prevent context overflow
+        recent_exchanges = exchanges[-12:] if len(exchanges) > 12 else exchanges
+        
+        # Construct messages: first the context message, then recent exchanges
+        messages = [{"role": "user", "content": search_context}]
+        
+        # Add a separator if we have exchanges
+        if recent_exchanges:
+            messages.append({"role": "assistant", "content": "I'll analyze these code search results. What specific aspects would you like me to focus on?"})
+            messages.extend(recent_exchanges)
+        else:
+            # If this is the first exchange, add the initial analysis request
+            messages.append({"role": "user", "content": initial_prompt})
         
         if provider == "anthropic":
             # Use streaming API for Anthropic
@@ -939,7 +961,7 @@ Keep your responses concise and to the point."""
                     "type": "enabled",
                     "budget_tokens": 2048
                 },
-                messages=history[-10:]  # Send only the last 10 exchanges
+                messages=messages
             ) as stream:
                 for text in stream.text_stream:
                     print(text, end="", flush=True)
@@ -951,7 +973,7 @@ Keep your responses concise and to the point."""
             
             stream = client.chat.completions.create(
                 model="o3-mini",
-                messages=[{"role": "system", "content": system_message}] + history[-10:],
+                messages=[{"role": "system", "content": system_message}] + messages,
                 temperature=1,
                 max_completion_tokens=4096,
                 stream=True
@@ -964,7 +986,9 @@ Keep your responses concise and to the point."""
                     full_response += text
         
         print()  # Add a newline after the streamed response
-        history.append({"role": "assistant", "content": full_response})
+        
+        # Add assistant response to exchanges
+        exchanges.append({"role": "assistant", "content": full_response})
 
 
 def clear_file_cache() -> None:
