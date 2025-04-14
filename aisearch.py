@@ -107,9 +107,9 @@ def format_extension_info(extensions: List[str]) -> str:
 def get_search_terms_from_prompt(prompt: str, max_terms: int = 10, 
                                 extensions: Optional[List[str]] = None, 
                                 provider: str = "anthropic",
-                                multiline: bool = True) -> List[str]:
+                                multiline: bool = True) -> Tuple[List[str], List[str]]:
     """
-    Generate search terms from a natural language prompt using AI.
+    Generate search terms and anti-patterns from a natural language prompt using AI.
     
     Args:
         prompt: Natural language prompt describing what to search for
@@ -119,7 +119,7 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
         multiline: Whether to enable multi-line regex patterns (default: True)
         
     Returns:
-        List of search terms (regex patterns)
+        Tuple of (search_terms, anti_patterns): Lists of regex patterns
     """
     client = get_ai_client(provider)
     
@@ -128,9 +128,15 @@ Focus on practical patterns that would appear in actual code.
 Generate proper regex patterns that can be used with Python's re module, not just literal strings.
 Include regex syntax for more powerful searches (e.g., \b for word boundaries, .* for any characters, etc.).
 
+You must generate TWO distinct sets of patterns:
+1. Search patterns - regex patterns to find matches for the user's query
+2. Anti-patterns - regex patterns to EXCLUDE matches that are irrelevant or false positives
+
 IMPORTANT: Think about how your search terms will work TOGETHER to discover the underlying search intent.
 Create a diverse set of patterns that capture different aspects of the search and complement each other.
 Some terms should be specific, others more general to ensure good coverage of potential matches.
+
+For anti-patterns, think carefully about what might cause false positives and create patterns to exclude those.
 """
 
     if multiline:
@@ -154,8 +160,16 @@ IMPORTANT EFFICIENCY GUIDELINES:
 - Add anchors (^ $) when appropriate to limit search space
 - For function/class definitions, use more specific start/end markers rather than greedy matches
 
-Keep your response VERY brief - just list the search terms, one per line.
-Respond with ONLY the search terms, with no additional text, explanations, or numbering.
+YOUR OUTPUT FORMAT MUST BE:
+Return your answer as a Python list of two lists, where the first list contains the search patterns and the second list contains the anti-patterns.
+For example:
+[
+    ['pattern1', 'pattern2', 'pattern3'],
+    ['anti-pattern1', 'anti-pattern2']
+]
+
+Make sure your output can be parsed directly by Python's ast.literal_eval() function.
+DO NOT include any explanation or additional text - ONLY the list structure above.
 """
     
     extensions_info = format_extension_info(extensions)
@@ -172,7 +186,7 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
             },
             messages=[{
                 "role": "user",
-                "content": f"Generate up to {max_terms} effective regex search patterns for finding: '{prompt}'{extensions_info}"
+                "content": f"Generate up to {max_terms} effective regex search patterns and anti-patterns for finding: '{prompt}'{extensions_info}"
             }]
         )
         raw_text = response.content[1].text.strip()
@@ -181,39 +195,195 @@ Respond with ONLY the search terms, with no additional text, explanations, or nu
             model="o3-mini",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": f"Generate up to {max_terms} effective regex search patterns for finding: '{prompt}'{extensions_info}"}
+                {"role": "user", "content": f"Generate up to {max_terms} effective regex search patterns and anti-patterns for finding: '{prompt}'{extensions_info}"}
             ],
             temperature=1,
             max_completion_tokens=4096
         )
         raw_text = response.choices[0].message.content.strip()
     
-    return parse_ai_response(raw_text, max_terms)
+    return parse_ai_response_with_antipatterns(raw_text, max_terms)
 
 
-def parse_ai_response(raw_text: str, max_terms: int) -> List[str]:
+def parse_ai_response_with_antipatterns(raw_text: str, max_terms: int) -> Tuple[List[str], List[str]]:
     """
-    Parse and clean AI response into usable search terms.
+    Parse and clean AI response into usable search terms and anti-patterns.
     
     Args:
         raw_text: Raw text response from AI
         max_terms: Maximum number of terms to return
         
     Returns:
-        List of cleaned search terms
+        Tuple of (search_terms, anti_patterns)
     """
-    terms = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        # Skip empty lines or lines that look like explanations/headers
-        if not line or line.startswith('#') or line.startswith('-') or len(line) > 60:
-            continue
-        # Remove any prefix numbering (1., 2., etc.)
-        line = re.sub(r'^\d+[\.\)]\s*', '', line)
-        if line:
-            terms.append(line)
+    search_terms = []
+    anti_patterns = []
     
-    return terms[:max_terms]  # Ensure we don't exceed max_terms
+    # Special case for the specific format we're encountering:
+    # - ['pattern1', 'pattern2', ...]
+    # - ['anti-pattern1', 'anti-pattern2', ...]
+    dash_list_pattern = r'-\s*\[(.*?)\]'
+    dash_lists = re.findall(dash_list_pattern, raw_text, re.DOTALL)
+    
+    if len(dash_lists) >= 2:
+        print("DEBUG: Found dash-list format, parsing directly")
+        try:
+            # Try to parse the first list (search patterns)
+            search_list_str = dash_lists[0]
+            search_list_str = '[' + search_list_str + ']'  # Add brackets back
+            search_list = ast.literal_eval(search_list_str)
+            search_terms = [str(s) for s in search_list]
+            
+            # Try to parse the second list (anti-patterns)
+            anti_list_str = dash_lists[1]
+            anti_list_str = '[' + anti_list_str + ']'  # Add brackets back
+            anti_list = ast.literal_eval(anti_list_str)
+            anti_patterns = [str(s) for s in anti_list]
+            
+            print(f"DEBUG: Successfully parsed dash-list format")
+            print(f"DEBUG: search_terms: {search_terms[:3]}...")
+            print(f"DEBUG: anti_patterns: {anti_patterns[:3]}...")
+            
+            # Return early since we successfully parsed the format
+            return search_terms[:max_terms], anti_patterns[:max_terms]
+        except Exception as e:
+            print(f"DEBUG: Error parsing dash-list format: {e}")
+            # Continue with other parsing methods
+    
+    # If the above parsing failed, try standard methods
+    try:
+        # First, let's check if the response looks like it contains Python list literals
+        if raw_text.strip().startswith('[') and raw_text.strip().endswith(']'):
+            import ast
+            
+            try:
+                # Try to parse using ast.literal_eval which is safe for literals
+                parsed_data = ast.literal_eval(raw_text)
+                
+                # Check if this is a list of lists (search patterns and anti-patterns)
+                if isinstance(parsed_data, list) and len(parsed_data) >= 2:
+                    # First element is likely search patterns
+                    for item in parsed_data[0]:
+                        if isinstance(item, str) and item not in search_terms:
+                            search_terms.append(item)
+                    
+                    # Second element is likely anti-patterns
+                    for item in parsed_data[1]:
+                        if isinstance(item, str) and item not in anti_patterns:
+                            anti_patterns.append(item)
+                    
+                    # Successfully parsed, return early
+                    return (
+                        list(search_terms[:max_terms]) if search_terms else [],
+                        list(anti_patterns[:max_terms]) if anti_patterns else []
+                    )
+                
+                # If we get here, it might be a single list of patterns
+                if isinstance(parsed_data, list) and len(parsed_data) > 0:
+                    for item in parsed_data:
+                        if isinstance(item, str) and item not in search_terms:
+                            search_terms.append(item)
+                    
+                    # Successfully parsed, return early with empty anti-patterns
+                    return (
+                        list(search_terms[:max_terms]) if search_terms else [],
+                        []
+                    )
+            except:
+                # If ast.literal_eval fails, continue with regex-based parsing
+                pass
+        
+        # If AST parsing didn't succeed, try to extract list literals from the text
+        list_pattern = r'\[(.*?)\]'
+        list_matches = re.findall(list_pattern, raw_text, re.DOTALL)
+        
+        if len(list_matches) >= 2:
+            # First match is likely search patterns
+            search_match = list_matches[0]
+            anti_match = list_matches[1]
+            
+            # Extract patterns from search_match
+            pattern_matches = re.findall(r'[\'"]([^\'"]+)[\'"]', search_match)
+            for pattern in pattern_matches:
+                if pattern and pattern not in search_terms:
+                    search_terms.append(pattern)
+            
+            # Extract patterns from anti_match
+            pattern_matches = re.findall(r'[\'"]([^\'"]+)[\'"]', anti_match)
+            for pattern in pattern_matches:
+                if pattern and pattern not in anti_patterns:
+                    anti_patterns.append(pattern)
+            
+            # If we found patterns, return early
+            if search_terms or anti_patterns:
+                return (
+                    list(search_terms[:max_terms]) if search_terms else [],
+                    list(anti_patterns[:max_terms]) if anti_patterns else []
+                )
+        
+        # If we didn't find list literals or they didn't contain patterns,
+        # fall back to standard parsing
+        parts = re.split(r'(?i)^\s*ANTI.?PATTERNS\s*:?\s*$', raw_text, flags=re.MULTILINE)
+        
+        if len(parts) >= 2:
+            search_part = parts[0]
+            anti_part = parts[1]
+            
+            # Further refine the search part if it contains a header
+            search_header_match = re.search(r'(?i)^\s*SEARCH.?PATTERNS\s*:?\s*$', search_part, re.MULTILINE)
+            if search_header_match:
+                search_part = search_part[search_header_match.end():]
+            
+            # Parse search terms
+            for line in search_part.splitlines():
+                line = line.strip()
+                # Skip empty lines or lines that look like explanations/headers
+                if not line or line.startswith('#') or line.startswith('-') or line.startswith('SEARCH') or len(line) > 120:
+                    continue
+                # Remove any prefix numbering (1., 2., etc.)
+                line = re.sub(r'^\d+[\.\)]\s*', '', line)
+                if line and line not in search_terms:
+                    search_terms.append(line)
+            
+            # Parse anti-patterns
+            for line in anti_part.splitlines():
+                line = line.strip()
+                # Skip empty lines or lines that look like explanations/headers
+                if not line or line.startswith('#') or line.startswith('-') or len(line) > 120:
+                    continue
+                # Remove any prefix numbering (1., 2., etc.)
+                line = re.sub(r'^\d+[\.\)]\s*', '', line)
+                if line and line not in anti_patterns:
+                    anti_patterns.append(line)
+        else:
+            # Fallback if no clear separation found - assume all are search terms
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or line.startswith('-') or len(line) > 120:
+                    continue
+                # Remove any prefix numbering (1., 2., etc.)
+                line = re.sub(r'^\d+[\.\)]\s*', '', line)
+                if line and line not in search_terms:
+                    search_terms.append(line)
+    
+    except Exception as e:
+        print(f"Warning: Error parsing AI response: {e}")
+        print("Falling back to simple parsing...")
+        # Simplified fallback parsing
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line or len(line) > 120:
+                continue
+            if "anti" in line.lower():
+                continue  # Skip any line with "anti" to avoid mixing search/anti-patterns
+            if line and line not in search_terms:
+                search_terms.append(line)
+    
+    # Ensure we're returning proper lists and not exceeding max_terms
+    return (
+        list(search_terms[:max_terms]) if search_terms else [], 
+        list(anti_patterns[:max_terms]) if anti_patterns else []
+    )
 
 
 def sanitize_regex_pattern(pattern: str) -> str:
@@ -411,7 +581,8 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                context_lines: int, ignore_comments: bool, 
                sanitized_patterns: Dict[str, str], 
                compiled_patterns: Optional[List[regex.Pattern]] = None,
-               multiline: bool = True) -> List[Dict[str, Any]]:
+               multiline: bool = True,
+               anti_patterns: Optional[List[regex.Pattern]] = None) -> List[Dict[str, Any]]:
     """
     Search a single file for all terms and return matches.
     
@@ -427,6 +598,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
         sanitized_patterns: Dictionary of sanitized regex patterns
         compiled_patterns: List of pre-compiled regex patterns
         multiline: Whether to use multi-line regex mode (default: True)
+        anti_patterns: List of regex patterns to exclude matches (default: None)
         
     Returns:
         List of match dictionaries
@@ -499,6 +671,19 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                     start_line_idx = find_line_index(match_start, line_offsets)
                     end_line_idx = find_line_index(match_end - 1 if match_end > 0 else 0, line_offsets)
                     
+                    # Extract the actual matched text
+                    matched_text = match.group(0)
+                    
+                    # Check against anti-patterns if provided
+                    if anti_patterns:
+                        should_exclude = False
+                        for anti_pattern in anti_patterns:
+                            if anti_pattern.search(matched_text):
+                                should_exclude = True
+                                break
+                        if should_exclude:
+                            continue  # Skip this match if it matches an anti-pattern
+                    
                     # Ensure we get the entire multi-line match plus context
                     context_start = max(0, start_line_idx - context_lines)
                     context_end = min(len(lines), end_line_idx + context_lines + 1)
@@ -563,6 +748,17 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                                 term.lower() in line_to_check.lower())
                     
                     if match:
+                        # For regular expression matches, check against anti-patterns
+                        if use_regex and anti_patterns:
+                            matched_text = line_to_check if not isinstance(match, regex.Match) else match.group(0)
+                            should_exclude = False
+                            for anti_pattern in anti_patterns:
+                                if anti_pattern.search(matched_text):
+                                    should_exclude = True
+                                    break
+                            if should_exclude:
+                                continue  # Skip this match if it matches an anti-pattern
+                        
                         start = max(0, line_idx - context_lines)
                         end = min(len(lines), line_idx + context_lines + 1)
                         context = "".join(lines[start:end])
@@ -593,7 +789,8 @@ def search_code(directory: str, search_terms: List[str],
                context_lines: int = 3, ignore_comments: bool = True, 
                max_workers: Optional[int] = None, 
                stop_requested: Optional[Callable[[], bool]] = None,
-               multiline: bool = True) -> List[Dict[str, Any]]:
+               multiline: bool = True,
+               anti_regex: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
     Search code in directory for specified terms.
     
@@ -608,6 +805,7 @@ def search_code(directory: str, search_terms: List[str],
         max_workers: Number of parallel workers (default: 2x CPU count, max 8 on Windows)
         stop_requested: Callable that returns True if search should be stopped
         multiline: Whether to use multi-line regex mode (default: True)
+        anti_regex: List of regex patterns to exclude matches that match them
         
     Returns:
         List of match dictionaries
@@ -638,6 +836,23 @@ def search_code(directory: str, search_terms: List[str],
                 pattern = regex.compile(r'(?!x)x')  # This pattern always fails to match
         compiled_patterns.append(pattern)
     
+    # Compile anti-regex patterns if provided
+    anti_patterns = None
+    if anti_regex:
+        anti_patterns = []
+        for term in anti_regex:
+            try:
+                pattern = compile_regex(term, flags)
+                anti_patterns.append(pattern)
+            except regex.error:
+                sanitized_term = sanitize_regex_pattern(term)
+                try:
+                    pattern = compile_regex(sanitized_term, flags)
+                    anti_patterns.append(pattern)
+                except regex.error:
+                    print(f"Warning: Could not compile anti-regex pattern: '{term}'")
+                    continue
+    
     # Setup tracking variables
     total_files = 0
     processed_files = 0
@@ -650,7 +865,8 @@ def search_code(directory: str, search_terms: List[str],
         max_workers = os.cpu_count() * 2
         max_workers = max(1, min(max_workers, 8 if sys.platform == 'win32' else max_workers))
     
-    # Check for cached file list
+    # Check for cached file list - create a hashable key
+    # Note: We don't include anti_regex in the cache key as it only affects results, not file list
     cache_key = (os.path.abspath(directory), frozenset(extensions) if extensions else None)
     cached_files = _file_cache.get(cache_key)
     
@@ -774,7 +990,7 @@ def search_code(directory: str, search_terms: List[str],
                         search_file, path, file_ext, search_terms, 
                         case_sensitive, True, color_output, 
                         context_lines, ignore_comments, 
-                        sanitized_patterns, compiled_patterns, multiline
+                        sanitized_patterns, compiled_patterns, multiline, anti_patterns
                     )
                     futures[future] = path
                     
@@ -823,7 +1039,7 @@ def search_code(directory: str, search_terms: List[str],
                             search_file, path, file_ext, search_terms, 
                             case_sensitive, True, color_output, 
                             context_lines, ignore_comments, 
-                            sanitized_patterns, compiled_patterns, multiline
+                            sanitized_patterns, compiled_patterns, multiline, anti_patterns
                         )
                         futures[future] = path
                         
@@ -1000,9 +1216,9 @@ def clear_file_cache() -> None:
 def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]], 
                             max_terms: int = 10, extensions: Optional[List[str]] = None, 
                             context_lines: int = 3, provider: str = "anthropic",
-                            multiline: bool = True) -> List[str]:
+                            multiline: bool = True) -> Tuple[List[str], List[str]]:
     """
-    Generate refined search terms based on initial matches.
+    Generate refined search terms and anti-patterns based on initial matches.
     
     Args:
         prompt: Original search prompt
@@ -1014,7 +1230,7 @@ def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]],
         multiline: Whether to enable multi-line regex patterns (default: True)
         
     Returns:
-        List of refined search terms
+        Tuple of (search_terms, anti_patterns)
     """
     client = get_ai_client(provider)
     
@@ -1050,12 +1266,15 @@ Focus on:
 3. Language-specific syntax patterns
 4. Practical regex patterns that can be used with Python's re module
 
+You must generate TWO distinct sets of patterns:
+1. Search patterns - regex patterns to find matches for the user's query
+2. Anti-patterns - regex patterns to EXCLUDE matches that are irrelevant or false positives
+
 IMPORTANT: Think about how your search terms will work TOGETHER to discover the underlying search intent.
 Create a diverse set of patterns that capture different aspects of the search and complement each other.
 Some terms should be specific to match known patterns, others more general to discover related code.
 
-Keep your response VERY brief - just list the search terms, one per line.
-Respond with ONLY the search terms, with no additional text, explanations, or numbering.
+For anti-patterns, analyze the current matches to identify false positives or irrelevant matches that should be excluded.
 """
     
     if multiline:
@@ -1072,6 +1291,16 @@ IMPORTANT EFFICIENCY GUIDELINES:
 - Prefer character classes [a-z] over wildcard .
 - Add anchors (^ $) when appropriate to limit search space
 - For function/class definitions, use more specific start/end markers rather than greedy matches
+
+Your response MUST be structured in two clearly separated sections:
+
+SEARCH PATTERNS:
+(list your search patterns here, one per line)
+
+ANTI-PATTERNS:
+(list your anti-patterns here, one per line)
+
+Keep each section brief - just list the patterns, with no additional text, explanations, or numbering.
 """
     
     extensions_info = format_extension_info(extensions)
@@ -1088,7 +1317,7 @@ IMPORTANT EFFICIENCY GUIDELINES:
             },
             messages=[{
                 "role": "user",
-                "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"
+                "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search patterns and anti-patterns based on these matches.{extensions_info}"
             }]
         )
         raw_text = response.content[1].text.strip()
@@ -1097,14 +1326,14 @@ IMPORTANT EFFICIENCY GUIDELINES:
             model="o3-mini",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search terms based on these matches.{extensions_info}"}
+                {"role": "user", "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search patterns and anti-patterns based on these matches.{extensions_info}"}
             ],
             temperature=1,
             max_completion_tokens=4096
         )
         raw_text = response.choices[0].message.content.strip()
     
-    return parse_ai_response(raw_text, max_terms)
+    return parse_ai_response_with_antipatterns(raw_text, max_terms)
 
 
 if __name__ == "__main__":
@@ -1121,30 +1350,81 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic", help="AI provider to use")
     parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
+    parser.add_argument("--anti-regex", nargs='+', help="Additional regex patterns to exclude matching results")
     args = parser.parse_args()
     
-    # Get search terms
-    search_terms = get_search_terms_from_prompt(
-        args.prompt, 
-        args.terms, 
-        args.extensions, 
-        args.provider,
-        not args.single_line  # Invert the single-line flag to get multiline
-    )
+    try:
+        # Get search terms and anti-patterns
+        search_terms, ai_anti_patterns = get_search_terms_from_prompt(
+            args.prompt, 
+            args.terms, 
+            args.extensions, 
+            args.provider,
+            not args.single_line  # Invert the single-line flag to get multiline
+        )
+        
+        # Debug output
+        print(f"DEBUG: search_terms type before processing: {type(search_terms)}")
+        
+        # Convert string patterns to lists of strings if needed
+        if isinstance(search_terms, str):
+            search_terms = [search_terms]
+        elif not isinstance(search_terms, list):
+            try:
+                search_terms = list(search_terms)
+            except:
+                search_terms = []
+                
+        if isinstance(ai_anti_patterns, str):
+            ai_anti_patterns = [ai_anti_patterns]
+        elif not isinstance(ai_anti_patterns, list):
+            try:
+                ai_anti_patterns = list(ai_anti_patterns)
+            except:
+                ai_anti_patterns = []
+        
+        # Ensure all items in lists are strings
+        search_terms = [str(term) for term in search_terms]
+        ai_anti_patterns = [str(pattern) for pattern in ai_anti_patterns]
+        
+        # Print generated patterns
+        print("Generated search patterns:")
+        for term in search_terms:
+            print(f"  {term}")
+        
+        print("\nGenerated anti-patterns:")
+        for pattern in ai_anti_patterns:
+            print(f"  {pattern}")
+        
+        # Combine AI-generated anti-patterns with any user-provided ones
+        all_anti_patterns = list(ai_anti_patterns) 
+        if args.anti_regex:
+            all_anti_patterns.extend([str(p) for p in args.anti_regex])
+            
+        # Debug output
+        print(f"DEBUG: Final search_terms type: {type(search_terms)}")
+        print(f"DEBUG: Final all_anti_patterns type: {type(all_anti_patterns)}")
+        
+        # Search code
+        matches = search_code(
+            directory=args.directory,
+            search_terms=search_terms,
+            extensions=args.extensions,
+            case_sensitive=not args.insensitive,
+            color_output=not args.no_color,
+            context_lines=args.context,
+            ignore_comments=not args.include_comments,
+            max_workers=args.workers,
+            multiline=not args.single_line,  # Invert the single-line flag to get multiline
+            anti_regex=all_anti_patterns
+        )
+        
+        # Chat about results if enabled
+        if not args.no_chat and matches:
+            chat_about_matches(matches, args.prompt, args.provider)
     
-    # Search code
-    matches = search_code(
-        directory=args.directory,
-        search_terms=search_terms,
-        extensions=args.extensions,
-        case_sensitive=not args.insensitive,
-        color_output=not args.no_color,
-        context_lines=args.context,
-        ignore_comments=not args.include_comments,
-        max_workers=args.workers,
-        multiline=not args.single_line  # Invert the single-line flag to get multiline
-    )
-    
-    # Chat about results if enabled
-    if not args.no_chat and matches:
-        chat_about_matches(matches, args.prompt, args.provider)
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

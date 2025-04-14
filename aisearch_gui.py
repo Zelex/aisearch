@@ -71,6 +71,7 @@ class SearchThread(threading.Thread):
         self.max_terms = max_terms
         self.max_workers = max_workers
         self.search_terms = []
+        self.anti_patterns = []
         self.matches = []
         self.running = True
         self.stop_requested = False
@@ -89,7 +90,7 @@ class SearchThread(threading.Thread):
             # Check if this is a refined search (we have previous matches)
             # This will be true if the parent has matches - for refined searches
             if hasattr(self.parent, 'matches') and self.parent.matches and len(self.parent.matches) > 0:
-                self.search_terms = aisearch.get_refined_search_terms(
+                self.search_terms, self.anti_patterns = aisearch.get_refined_search_terms(
                     self.prompt,
                     self.parent.matches,
                     max_terms=self.max_terms,
@@ -100,7 +101,7 @@ class SearchThread(threading.Thread):
                 )
                 self.parent.signal_update_status.emit("Generated refined search terms based on current results...")
             else:
-                self.search_terms = aisearch.get_search_terms_from_prompt(
+                self.search_terms, self.anti_patterns = aisearch.get_search_terms_from_prompt(
                     self.prompt,
                     max_terms=self.max_terms,
                     extensions=self.extensions,
@@ -108,8 +109,20 @@ class SearchThread(threading.Thread):
                     multiline=not self.single_line
                 )
             
+            # Ensure search_terms is a list of strings
+            if not isinstance(self.search_terms, list):
+                self.search_terms = list(self.search_terms) if self.search_terms else []
+            self.search_terms = [str(term) for term in self.search_terms]
+            
+            # Ensure anti_patterns is a list of strings
+            if not isinstance(self.anti_patterns, list):
+                self.anti_patterns = list(self.anti_patterns) if self.anti_patterns else []
+            self.anti_patterns = [str(pattern) for pattern in self.anti_patterns]
+            
             # Display terms
             terms_text = "Suggested terms:\n" + "\n".join([f"- {t}" for t in self.search_terms])
+            if self.anti_patterns:
+                terms_text += "\n\nAnti-patterns (exclusions):\n" + "\n".join([f"- {t}" for t in self.anti_patterns])
             self.parent.signal_update_terms.emit(terms_text)
             
             if self.stop_requested:
@@ -133,7 +146,8 @@ class SearchThread(threading.Thread):
                     ignore_comments=self.ignore_comments,
                     max_workers=self.max_workers,
                     stop_requested=lambda: self.stop_requested,  # Pass a callable to check if stop was requested
-                    multiline=not self.single_line
+                    multiline=not self.single_line,
+                    anti_regex=self.anti_patterns
                 )
                 
                 self.matches = all_matches
