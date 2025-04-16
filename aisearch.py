@@ -9,7 +9,12 @@ from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
 # Third-party imports
 import anthropic
 import openai
-import regex
+# Try to import pyre2 as regex if available, otherwise use standard regex
+try:
+    import re2 as regex
+    print("Using Google's RE2 regex engine for improved performance")
+except ImportError:
+    import regex
 from tqdm import tqdm
 
 # Cache for file lists when directory and extensions don't change
