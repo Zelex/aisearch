@@ -197,7 +197,7 @@ DO NOT include any explanation or additional text - ONLY the list structure abov
         raw_text = response.content[1].text.strip()
     else:  # OpenAI
         response = client.chat.completions.create(
-            model="o3-mini",
+            model="o4-mini",
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": f"Generate up to {max_terms} effective regex search patterns and anti-patterns for finding: '{prompt}'{extensions_info}"}
@@ -1193,7 +1193,7 @@ IMPORTANT: Always directly address the user's questions. If they ask a specific 
             full_response = ""
             
             stream = client.chat.completions.create(
-                model="o3-mini",
+                model="o4-mini",
                 messages=[{"role": "system", "content": system_message}] + messages,
                 temperature=1,
                 max_completion_tokens=4096,
@@ -1328,7 +1328,7 @@ Keep each section brief - just list the patterns, with no additional text, expla
         raw_text = response.content[1].text.strip()
     else:  # OpenAI
         response = client.chat.completions.create(
-            model="o3-mini",
+            model="o4-mini",
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": f"Original search prompt: '{prompt}'\n\nCurrent matches:\n{combined_contexts}\n\nGenerate up to {max_terms} refined search patterns and anti-patterns based on these matches.{extensions_info}"}
