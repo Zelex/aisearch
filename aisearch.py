@@ -1355,7 +1355,6 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic", help="AI provider to use")
     parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
-    parser.add_argument("--anti-regex", nargs='+', help="Additional regex patterns to exclude matching results")
     args = parser.parse_args()
     
     try:
@@ -1401,14 +1400,9 @@ if __name__ == "__main__":
         for pattern in ai_anti_patterns:
             print(f"  {pattern}")
         
-        # Combine AI-generated anti-patterns with any user-provided ones
-        all_anti_patterns = list(ai_anti_patterns) 
-        if args.anti_regex:
-            all_anti_patterns.extend([str(p) for p in args.anti_regex])
-            
         # Debug output
         print(f"DEBUG: Final search_terms type: {type(search_terms)}")
-        print(f"DEBUG: Final all_anti_patterns type: {type(all_anti_patterns)}")
+        print(f"DEBUG: Final ai_anti_patterns type: {type(ai_anti_patterns)}")
         
         # Search code
         matches = search_code(
@@ -1421,7 +1415,7 @@ if __name__ == "__main__":
             ignore_comments=not args.include_comments,
             max_workers=args.workers,
             multiline=not args.single_line,  # Invert the single-line flag to get multiline
-            anti_regex=all_anti_patterns
+            anti_regex=ai_anti_patterns
         )
         
         # Chat about results if enabled
