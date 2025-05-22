@@ -515,7 +515,7 @@ def is_comment(line: str, file_ext: str) -> bool:
 
 def fast_walk(directory: str, skip_dirs: Optional[Set[str]] = None) -> Tuple[str, List[str], List[str]]:
     """
-    Faster alternative to os.walk using scandir with Windows-specific optimizations.
+    Faster alternative to os.walk using scandir with Windows-specific optimizations and multithreading.
     
     Args:
         directory: Directory to walk
@@ -533,17 +533,23 @@ def fast_walk(directory: str, skip_dirs: Optional[Set[str]] = None) -> Tuple[str
         directory = os.path.abspath(directory)
         if not directory.startswith('\\\\'):  # Not a UNC path
             directory = '\\\\?\\' + directory
+
+    # Use a thread-safe queue for directories to process
+    from queue import Queue, Empty
+    from threading import Lock, Event
+    dir_queue = Queue()
+    result_queue = Queue()
+    dir_queue.put(directory)
+    active_threads = 0
+    threads_done = Event()
     
-    # Use a stack instead of a queue for better memory locality
-    dirs = [directory]
-    while dirs:
-        current = dirs.pop()  # Depth-first is more memory efficient
+    # Function to process a single directory
+    def process_directory(current_dir: str) -> None:
         try:
-            # Get subdirectories and files in one pass
             subdirs = []
             files = []
             
-            with os.scandir(current) as it:
+            with os.scandir(current_dir) as it:
                 for entry in it:
                     try:
                         name = entry.name
@@ -571,14 +577,67 @@ def fast_walk(directory: str, skip_dirs: Optional[Set[str]] = None) -> Tuple[str
                         # Skip entries we can't access
                         continue
             
-            # Yield the current directory, subdirectory basenames, and files
-            yield current, [os.path.basename(d) for d in subdirs], files
+            # Put the current directory results in the result queue
+            result_queue.put((current_dir, [os.path.basename(d) for d in subdirs], files))
             
-            # Add subdirs to the stack in reverse order to maintain expected traversal order
-            dirs.extend(reversed(subdirs))
+            # Add subdirectories to the queue
+            for subdir in subdirs:
+                dir_queue.put(subdir)
+                
         except (PermissionError, OSError, Exception):
             # Skip any directories we can't access
-            continue
+            pass
+
+    # Worker function for threads
+    def worker():
+        nonlocal active_threads
+        active_threads += 1
+        try:
+            while True:
+                try:
+                    current_dir = dir_queue.get_nowait()
+                    process_directory(current_dir)
+                    dir_queue.task_done()
+                except Empty:
+                    break
+                except Exception:
+                    dir_queue.task_done()
+                    continue
+        finally:
+            active_threads -= 1
+            if active_threads == 0:
+                threads_done.set()
+
+    # Create and start worker threads
+    import threading
+    num_workers = min(32, os.cpu_count() * 4)  # Limit max threads
+    threads = []
+    for _ in range(num_workers):
+        t = threading.Thread(target=worker)
+        t.daemon = True
+        t.start()
+        threads.append(t)
+
+    # Wait for all directories to be processed
+    dir_queue.join()
+    
+    # Wait for all threads to complete
+    for t in threads:
+        t.join()
+
+    # Signal that all threads are done
+    threads_done.set()
+
+    # Yield all results from the result queue
+    while True:
+        try:
+            result = result_queue.get_nowait()
+            yield result
+        except Empty:
+            if threads_done.is_set():
+                break
+            # Give other threads a chance to add results
+            time.sleep(0.1)
 
 
 def search_file(path: str, file_ext: str, search_terms: List[str], 
