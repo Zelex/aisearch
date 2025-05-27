@@ -1710,6 +1710,7 @@ class AISearchGUI(QMainWindow):
         # Clear previous results - more aggressive memory cleanup
         if not is_refine:
             self.results_text.clear()
+            self.chat_history = []  # Clear chat history for new searches
         self.chat_output.clear()
         self.chat_input.clear()
         self.chat_button.setEnabled(False)
