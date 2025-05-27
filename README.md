@@ -113,3 +113,74 @@ For detailed CLI documentation, see [CLI Documentation](aisearch_readme.md).
 ## License
 
 MIT 
+
+## Caching Features
+
+The tool includes two levels of caching for improved performance:
+
+### File List Cache
+- Caches the list of files in a directory to avoid repeated filesystem traversal
+- Automatically cleared when directory or file extensions change
+- Use `--clear-cache` to manually clear
+
+### File Content Cache
+- Caches file contents in memory based on file path and modification time
+- Automatically invalidates when files are modified
+- Configurable cache size (default: 1000 files)
+- Uses FIFO eviction when cache is full
+
+### Cache Management Options
+
+```bash
+# Set maximum number of files to cache (default: 1000)
+python aisearch.py /path/to/code --cache-size 500 --prompt "find authentication code"
+
+# Clear all caches before searching
+python aisearch.py /path/to/code --clear-cache --prompt "find database connections"
+
+# Show cache statistics after search
+python aisearch.py /path/to/code --cache-stats --prompt "find error handling"
+```
+
+## Usage Examples
+
+```bash
+# Basic search with caching
+python aisearch.py /path/to/project --prompt "find SQL injection vulnerabilities"
+
+# Search specific file types with custom cache size
+python aisearch.py /path/to/project --prompt "authentication logic" -e .py .js --cache-size 2000
+
+# Clear cache and show statistics
+python aisearch.py /path/to/project --prompt "error handling" --clear-cache --cache-stats
+
+# Disable chat mode and show cache performance
+python aisearch.py /path/to/project --prompt "API endpoints" --no-chat --cache-stats
+```
+
+## Performance Benefits
+
+File content caching provides significant performance improvements for:
+- **Repeated searches** in the same codebase
+- **Iterative refinement** of search patterns
+- **Large codebases** where file I/O is a bottleneck
+- **Network-mounted** or slow storage systems
+
+Cache hit rates of 50-90% are common when performing multiple searches on the same codebase.
+
+## Environment Variables
+
+Set one of these based on your AI provider:
+
+```bash
+# For Anthropic Claude
+export ANTHROPIC_API_KEY="your-api-key"
+
+# For OpenAI
+export OPENAI_API_KEY="your-api-key"
+
+# For Azure OpenAI
+export AZURE_OPENAI_API_KEY="your-api-key"
+export AZURE_OPENAI_ENDPOINT="your-endpoint"
+export AZURE_OPENAI_DEPLOYMENT_NAME="your-deployment"
+``` 

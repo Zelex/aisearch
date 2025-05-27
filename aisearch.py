@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import ast
 import argparse
 import concurrent.futures
 import time
@@ -20,6 +21,10 @@ from tqdm import tqdm
 
 # Cache for file lists when directory and extensions don't change
 _file_cache = {}
+
+# Cache for file contents to avoid re-reading files
+_content_cache = {}
+_content_cache_stats = {"hits": 0, "misses": 0, "max_size": 1000}
 
 # Maps file extensions to programming languages
 LANGUAGE_MAP = {
@@ -695,8 +700,10 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
     file_matches = []
     
     try:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
+        # Use cached content if available
+        lines = _read_file_with_cache(path)
+        if lines is None:
+            return file_matches  # Return empty list if file can't be read
 
         if multiline and use_regex:
             # Process the entire file as a single string for multiline mode
@@ -1328,6 +1335,103 @@ def clear_file_cache() -> None:
     _file_cache.clear()
 
 
+def clear_content_cache() -> None:
+    """Clear the file content cache."""
+    global _content_cache, _content_cache_stats
+    _content_cache.clear()
+    _content_cache_stats["hits"] = 0
+    _content_cache_stats["misses"] = 0
+
+
+def get_content_cache_stats() -> Dict[str, Any]:
+    """Get content cache statistics."""
+    return {
+        "cache_size": len(_content_cache),
+        "hits": _content_cache_stats["hits"],
+        "misses": _content_cache_stats["misses"],
+        "hit_rate": _content_cache_stats["hits"] / max(1, _content_cache_stats["hits"] + _content_cache_stats["misses"]),
+        "max_size": _content_cache_stats["max_size"]
+    }
+
+
+def set_content_cache_max_size(max_size: int) -> None:
+    """Set the maximum number of files to cache in memory."""
+    global _content_cache_stats
+    _content_cache_stats["max_size"] = max_size
+    _evict_content_cache_if_needed()
+
+
+def _evict_content_cache_if_needed() -> None:
+    """Evict oldest entries from content cache if it exceeds max size."""
+    global _content_cache
+    max_size = _content_cache_stats["max_size"]
+    
+    if len(_content_cache) > max_size:
+        # Remove oldest entries (simple FIFO eviction)
+        items_to_remove = len(_content_cache) - max_size
+        keys_to_remove = list(_content_cache.keys())[:items_to_remove]
+        for key in keys_to_remove:
+            del _content_cache[key]
+
+
+def _get_file_cache_key(path: str) -> Tuple[str, float]:
+    """
+    Generate a cache key for a file based on path and modification time.
+    
+    Args:
+        path: File path
+        
+    Returns:
+        Tuple of (absolute_path, modification_time)
+    """
+    try:
+        abs_path = os.path.abspath(path)
+        mtime = os.path.getmtime(path)
+        return (abs_path, mtime)
+    except (OSError, FileNotFoundError):
+        # If we can't get mtime, use current time to force cache miss
+        return (os.path.abspath(path), time.time())
+
+
+def _read_file_with_cache(path: str) -> Optional[List[str]]:
+    """
+    Read file contents with caching support.
+    
+    Args:
+        path: Path to file to read
+        
+    Returns:
+        List of lines from the file, or None if file cannot be read
+    """
+    global _content_cache, _content_cache_stats
+    
+    cache_key = _get_file_cache_key(path)
+    
+    # Check if we have cached content for this file
+    if cache_key in _content_cache:
+        _content_cache_stats["hits"] += 1
+        return _content_cache[cache_key]
+    
+    # Cache miss - read the file
+    _content_cache_stats["misses"] += 1
+    
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+        
+        # Cache the content if we're under the size limit
+        if len(_content_cache) < _content_cache_stats["max_size"]:
+            _content_cache[cache_key] = lines
+        else:
+            # Evict old entries and add new one
+            _evict_content_cache_if_needed()
+            _content_cache[cache_key] = lines
+        
+        return lines
+    except Exception:
+        return None
+
+
 def get_refined_search_terms(prompt: str, matches: List[Dict[str, Any]], 
                             max_terms: int = 10, extensions: Optional[List[str]] = None, 
                             context_lines: int = 3, provider: str = "anthropic",
@@ -1465,9 +1569,21 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--provider", choices=["anthropic", "openai", "azure"], default="anthropic", help="AI provider to use")
     parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
+    parser.add_argument("--cache-size", type=int, default=1000, help="Maximum number of files to cache in memory (default: 1000)")
+    parser.add_argument("--clear-cache", action="store_true", help="Clear both file list and content caches before searching")
+    parser.add_argument("--cache-stats", action="store_true", help="Show cache statistics after search")
     args = parser.parse_args()
     
     try:
+        # Handle cache management
+        if args.clear_cache:
+            clear_file_cache()
+            clear_content_cache()
+            print("Cleared file list and content caches")
+        
+        # Set content cache size
+        set_content_cache_max_size(args.cache_size)
+        
         # Get search terms and anti-patterns
         search_terms, ai_anti_patterns = get_search_terms_from_prompt(
             args.prompt, 
@@ -1531,6 +1647,16 @@ if __name__ == "__main__":
         # Chat about results if enabled
         if not args.no_chat and matches:
             chat_about_matches(matches, args.prompt, args.provider)
+        
+        # Show cache statistics if requested
+        if args.cache_stats:
+            stats = get_content_cache_stats()
+            print(f"\nContent Cache Statistics:")
+            print(f"  Cache size: {stats['cache_size']} files")
+            print(f"  Cache hits: {stats['hits']}")
+            print(f"  Cache misses: {stats['misses']}")
+            print(f"  Hit rate: {stats['hit_rate']:.2%}")
+            print(f"  Max cache size: {stats['max_size']}")
     
     except Exception as e:
         print(f"Error: {type(e).__name__}: {e}")
