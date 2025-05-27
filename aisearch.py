@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
 # Third-party imports
 import anthropic
 import openai
+from openai import AzureOpenAI
 # Try to import pyre2 as regex if available, otherwise use standard regex
 try:
     import re2 as regex
@@ -42,12 +43,12 @@ LANGUAGE_MAP = {
 # Default directories to skip when searching
 DEFAULT_SKIP_DIRS = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'build', 'dist', 'obj', 'bin'}
 
-def get_ai_client(provider: str = "anthropic") -> Union[anthropic.Anthropic, openai.OpenAI]:
+def get_ai_client(provider: str = "anthropic") -> Union[anthropic.Anthropic, openai.OpenAI, AzureOpenAI]:
     """
     Get the appropriate AI client based on provider.
     
     Args:
-        provider: AI provider to use ("anthropic" or "openai")
+        provider: AI provider to use ("anthropic", "openai", or "azure")
         
     Returns:
         Configured client for the specified provider
@@ -63,6 +64,18 @@ def get_ai_client(provider: str = "anthropic") -> Union[anthropic.Anthropic, ope
         if not os.environ.get("OPENAI_API_KEY"):
             raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY environment variable.")
         return openai.OpenAI()
+    elif provider == "azure":
+        if not os.environ.get("AZURE_OPENAI_API_KEY"):
+            raise ValueError("Azure OpenAI API key not found. Please set AZURE_OPENAI_API_KEY environment variable.")
+        if not os.environ.get("AZURE_OPENAI_ENDPOINT"):
+            raise ValueError("Azure OpenAI endpoint not found. Please set AZURE_OPENAI_ENDPOINT environment variable.")
+        if not os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME"):
+            raise ValueError("Azure OpenAI deployment name not found. Please set AZURE_OPENAI_DEPLOYMENT_NAME environment variable.")
+        return AzureOpenAI(
+            api_key=os.environ["AZURE_OPENAI_API_KEY"],
+            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
+        )
     else:
         raise ValueError(f"Unsupported AI provider: {provider}")
 
@@ -120,7 +133,7 @@ def get_search_terms_from_prompt(prompt: str, max_terms: int = 10,
         prompt: Natural language prompt describing what to search for
         max_terms: Maximum number of search terms to generate
         extensions: List of file extensions to focus on
-        provider: AI provider to use ("anthropic" or "openai")
+        provider: AI provider to use ("anthropic", "openai", or "azure")
         multiline: Whether to enable multi-line regex patterns (default: True)
         
     Returns:
@@ -195,6 +208,18 @@ DO NOT include any explanation or additional text - ONLY the list structure abov
             }]
         )
         raw_text = response.content[1].text.strip()
+    elif provider == "azure":
+        deployment_name = os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"]
+        response = client.chat.completions.create(
+            model=deployment_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"Generate up to {max_terms} effective regex search patterns and anti-patterns for finding: '{prompt}'{extensions_info}"}
+            ],
+            temperature=1,
+            max_tokens=4096
+        )
+        raw_text = response.choices[0].message.content.strip()
     else:  # OpenAI
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -1157,7 +1182,7 @@ def chat_about_matches(matches: List[Dict[str, Any]],
     Args:
         matches: List of match dictionaries
         original_prompt: Original search prompt
-        provider: AI provider to use ("anthropic" or "openai")
+        provider: AI provider to use ("anthropic", "openai", or "azure")
     """
     client = get_ai_client(provider)
     
@@ -1253,13 +1278,32 @@ IMPORTANT: Always directly address the user's questions. If they ask a specific 
                 for text in stream.text_stream:
                     print(text, end="", flush=True)
                     full_response += text
+        elif provider == "azure":
+            # Use streaming API for Azure OpenAI
+            print("\nAzure OpenAI: ", end="", flush=True)
+            full_response = ""
+            
+            deployment_name = os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"]
+            stream = client.chat.completions.create(
+                model=deployment_name,
+                messages=[{"role": "system", "content": system_message}] + messages,
+                temperature=1,
+                max_tokens=4096,
+                stream=True
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    text = chunk.choices[0].delta.content
+                    print(text, end="", flush=True)
+                    full_response += text
         else:  # OpenAI
             # Use streaming API for OpenAI
             print("\nGPT-4: ", end="", flush=True)
             full_response = ""
             
             stream = client.chat.completions.create(
-                model="o4-mini",
+                model="gpt-4.1-mini",
                 messages=[{"role": "system", "content": system_message}] + messages,
                 temperature=1,
                 max_completion_tokens=4096,
@@ -1419,7 +1463,7 @@ if __name__ == "__main__":
     parser.add_argument("--terms", type=int, default=10, help="Number of search terms to generate")
     parser.add_argument("--context", type=int, default=6, help="Lines of context before/after match")
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
-    parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic", help="AI provider to use")
+    parser.add_argument("--provider", choices=["anthropic", "openai", "azure"], default="anthropic", help="AI provider to use")
     parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
     args = parser.parse_args()
     

@@ -201,30 +201,19 @@ class ChatThread(threading.Thread):
             IMPORTANT: Always directly address the user's questions. If they ask a specific question about the code or results,
             make sure to answer that question directly rather than continuing your previous analysis."""
             
-            # Prepare messages
-            if not self.chat_history:
-                # First message in the conversation
-                messages = [
-                    {"role": "user", "content": f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"}
-                ]
-                
-                if self.question:
-                    messages.append({"role": "user", "content": self.question})
-                else:
-                    messages.append({"role": "user", "content": "Please analyze these findings."})
-            else:
-                # We have existing chat history
-                # First message always contains the search context
-                messages = [
-                    {"role": "user", "content": f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"}
-                ]
-                # Add a separator message
-                messages.append({"role": "assistant", "content": "I'll analyze these code search results. What would you like to know?"})
-                # Add the conversation history (limited to last 10 exchanges to prevent context overflow)
-                messages.extend(self.chat_history[-10:])
-                # Add the new question
-                if self.question:
-                    messages.append({"role": "user", "content": self.question})
+            # Store the initial search results as a fixed context that will always be included
+            search_context = f"These are code search results for: '{self.prompt}'\n\n{combined_contexts}"
+            
+            # Keep track of user-assistant exchanges separately from the fixed context
+            exchanges = self.chat_history or []
+            
+            # Add the current question if provided
+            if self.question:
+                exchanges.append({"role": "user", "content": self.question})
+            
+            # Construct messages: first the context message, then recent exchanges
+            messages = [{"role": "user", "content": search_context}]
+            messages.extend(exchanges[-12:] if len(exchanges) > 12 else exchanges)
             
             if self.provider == "anthropic":
                 response = client.messages.create(
@@ -235,6 +224,16 @@ class ChatThread(threading.Thread):
                     messages=messages
                 )
                 response_text = response.content[0].text
+            elif self.provider == "azure":
+                # Get deployment name from parent's settings
+                deployment_name = getattr(self.parent, 'azure_deployment', 'gpt-4')
+                response = client.chat.completions.create(
+                    model=deployment_name,
+                    messages=[{"role": "system", "content": system_message}] + messages,
+                    temperature=1,
+                    max_tokens=4096
+                )
+                response_text = response.choices[0].message.content
             else:  # OpenAI
                 response = client.chat.completions.create(
                     model="gpt-4-turbo-preview",
@@ -1267,7 +1266,7 @@ class AISearchGUI(QMainWindow):
         ai_layout = QVBoxLayout(ai_group)
         
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["anthropic", "openai"])
+        self.provider_combo.addItems(["anthropic", "openai", "azure"])
         self.provider_combo.currentTextChanged.connect(self.on_provider_changed)
         ai_layout.addWidget(self.provider_combo)
         
@@ -1279,6 +1278,10 @@ class AISearchGUI(QMainWindow):
         openai_key_btn = QPushButton("OpenAI Key")
         openai_key_btn.clicked.connect(lambda: self.show_api_key_dialog("openai"))
         api_buttons.addWidget(openai_key_btn)
+        
+        azure_key_btn = QPushButton("Azure Key")
+        azure_key_btn.clicked.connect(lambda: self.show_api_key_dialog("azure"))
+        api_buttons.addWidget(azure_key_btn)
         
         ai_layout.addLayout(api_buttons)
         sidebar_layout.addWidget(ai_group)
@@ -1812,7 +1815,7 @@ class AISearchGUI(QMainWindow):
     def show_api_key_dialog(self, provider):
         """Show dialog to input API key"""
         current_key = getattr(self, f"{provider}_key", '')
-        title = "Set Anthropic API Key" if provider == "anthropic" else "Set OpenAI API Key"
+        title = f"Set {provider.title()} API Key"
         
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -1832,6 +1835,36 @@ class AISearchGUI(QMainWindow):
         key_layout.addWidget(key_input)
         layout.addLayout(key_layout)
         
+        # Azure-specific fields
+        if provider == "azure":
+            # Endpoint input
+            endpoint_layout = QHBoxLayout()
+            endpoint_layout.addWidget(QLabel("Endpoint:"))
+            endpoint_input = QLineEdit()
+            endpoint_input.setPlaceholderText("https://your-resource-name.openai.azure.com")
+            endpoint_input.setText(getattr(self, "azure_endpoint", ""))
+            endpoint_layout.addWidget(endpoint_input)
+            layout.addLayout(endpoint_layout)
+            
+            # Deployment name input
+            deployment_layout = QHBoxLayout()
+            deployment_layout.addWidget(QLabel("Deployment:"))
+            deployment_input = QLineEdit()
+            deployment_input.setPlaceholderText("gpt-4")
+            deployment_input.setText(getattr(self, "azure_deployment", "gpt-4"))
+            deployment_layout.addWidget(deployment_input)
+            layout.addLayout(deployment_layout)
+            
+            # Add help text for Azure configuration
+            help_text = QLabel(
+                "For Azure OpenAI, you need:\n"
+                "1. API Key from Azure Portal\n"
+                "2. Endpoint URL from your Azure OpenAI resource\n"
+                "3. Deployment name of your model"
+            )
+            help_text.setWordWrap(True)
+            layout.addWidget(help_text)
+        
         # Buttons
         button_layout = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -1841,10 +1874,45 @@ class AISearchGUI(QMainWindow):
         layout.addLayout(button_layout)
         
         # Connect buttons
-        save_btn.clicked.connect(lambda: self.save_api_key(provider, key_input.text(), dialog))
+        if provider == "azure":
+            save_btn.clicked.connect(lambda: self.save_azure_config(
+                key_input.text(), 
+                endpoint_input.text(),
+                deployment_input.text(),
+                dialog
+            ))
+        else:
+            save_btn.clicked.connect(lambda: self.save_api_key(provider, key_input.text(), dialog))
         cancel_btn.clicked.connect(dialog.reject)
         
         dialog.exec()
+    
+    def save_azure_config(self, key, endpoint, deployment, dialog):
+        """Save Azure OpenAI configuration"""
+        if not key:
+            QMessageBox.warning(dialog, "Error", "API Key cannot be empty")
+            return
+            
+        if not endpoint:
+            QMessageBox.warning(dialog, "Error", "Endpoint URL cannot be empty")
+            return
+            
+        if not deployment:
+            deployment = "gpt-4"  # Default deployment name
+            
+        # Save to instance variables
+        self.azure_key = key
+        self.azure_endpoint = endpoint
+        self.azure_deployment = deployment
+        
+        # Set environment variables
+        os.environ["AZURE_OPENAI_API_KEY"] = key
+        os.environ["AZURE_OPENAI_ENDPOINT"] = endpoint
+        os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = deployment
+        
+        self.saveSettings()
+        dialog.accept()
+        self.statusBar().showMessage("Azure OpenAI configuration saved")
     
     def save_api_key(self, provider, key, dialog):
         """Save API key and close dialog"""
@@ -2079,12 +2147,19 @@ class AISearchGUI(QMainWindow):
         # API Keys (stored encrypted)
         self.anthropic_key = self.settings.value("anthropic_api_key", "")
         self.openai_key = self.settings.value("openai_api_key", "")
+        self.azure_key = self.settings.value("azure_api_key", "")
+        self.azure_endpoint = self.settings.value("azure_endpoint", "")
+        self.azure_deployment = self.settings.value("azure_deployment", "gpt-4")
         
         # Set environment variables if API keys are available
         if self.anthropic_key:
             os.environ["ANTHROPIC_API_KEY"] = self.anthropic_key
         if self.openai_key:
             os.environ["OPENAI_API_KEY"] = self.openai_key
+        if self.azure_key and self.azure_endpoint:
+            os.environ["AZURE_OPENAI_API_KEY"] = self.azure_key
+            os.environ["AZURE_OPENAI_ENDPOINT"] = self.azure_endpoint
+            os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"] = self.azure_deployment
         
         # Provider
         provider = self.settings.value("provider", "anthropic")
@@ -2116,6 +2191,10 @@ class AISearchGUI(QMainWindow):
             self.settings.setValue("anthropic_api_key", self.anthropic_key)
         if hasattr(self, 'openai_key'):
             self.settings.setValue("openai_api_key", self.openai_key)
+        if hasattr(self, 'azure_key'):
+            self.settings.setValue("azure_api_key", self.azure_key)
+            self.settings.setValue("azure_endpoint", self.azure_endpoint)
+            self.settings.setValue("azure_deployment", self.azure_deployment)
         
         # Provider
         self.settings.setValue("provider", self.provider_combo.currentText())
