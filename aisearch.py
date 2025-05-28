@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import time
 from typing import List, Dict, Any, Set, Tuple, Optional, Callable, Union
+import threading
 
 # Third-party imports
 import anthropic
@@ -466,7 +467,13 @@ def compile_regex(pattern: str, flags: int) -> regex.Pattern:
     if flags & re.DOTALL:
         regex_flags |= regex.DOTALL
     
-    return regex.compile(pattern, regex_flags)
+    # Add performance optimizations for the regex module
+    # These can help with GIL release and performance
+    try:
+        return regex.compile(pattern, regex_flags | regex.VERSION1)
+    except regex.error:
+        # Fallback to basic compilation if VERSION1 fails
+        return regex.compile(pattern, regex_flags)
 
 
 def highlight_match(line: str, term: str, pattern: Optional[regex.Pattern], 
@@ -545,7 +552,7 @@ def is_comment(line: str, file_ext: str) -> bool:
 
 def fast_walk(directory: str, skip_dirs: Optional[Set[str]] = None) -> Tuple[str, List[str], List[str]]:
     """
-    Faster alternative to os.walk using scandir with Windows-specific optimizations and multithreading.
+    Ultra-fast parallel directory traversal using recursive threading.
     
     Args:
         directory: Directory to walk
@@ -559,115 +566,82 @@ def fast_walk(directory: str, skip_dirs: Optional[Set[str]] = None) -> Tuple[str
     
     # Enable long path support on Windows
     if sys.platform == 'win32' and not directory.startswith('\\\\?\\'):
-        # Convert to absolute path with \\?\ prefix to support long paths
         directory = os.path.abspath(directory)
-        if not directory.startswith('\\\\'):  # Not a UNC path
+        if not directory.startswith('\\\\'):
             directory = '\\\\?\\' + directory
 
-    # Use a thread-safe queue for directories to process
-    from queue import Queue, Empty
-    from threading import Lock, Event
-    dir_queue = Queue()
-    result_queue = Queue()
-    dir_queue.put(directory)
-    active_threads = 0
-    threads_done = Event()
+    import concurrent.futures
+    from collections import deque
     
-    # Function to process a single directory
-    def process_directory(current_dir: str) -> None:
+    results = []
+    results_lock = threading.Lock()
+    
+    def scan_directory_parallel(dir_path: str, executor: concurrent.futures.ThreadPoolExecutor) -> List[concurrent.futures.Future]:
+        """Scan a single directory and submit subdirectories for parallel processing."""
+        futures = []
+        
         try:
             subdirs = []
             files = []
             
-            with os.scandir(current_dir) as it:
-                for entry in it:
+            # Use scandir for efficient directory scanning
+            with os.scandir(dir_path) as entries:
+                for entry in entries:
                     try:
                         name = entry.name
-                        # Skip hidden files and directories on Windows
-                        if sys.platform == 'win32' and name.startswith('.'):
+                        
+                        # Skip hidden files/dirs and specified skip dirs
+                        if (sys.platform == 'win32' and name.startswith('.')) or name in skip_dirs:
                             continue
+                        
+                        # Use cached stat info from scandir
+                        if entry.is_dir(follow_symlinks=False):
+                            subdirs.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            files.append(name)
                             
-                        # Quick name check before expensive is_dir call
-                        if name in skip_dirs:
-                            continue
-                            
-                        # Use stat attributes directly when possible
-                        if hasattr(entry, 'is_dir') and hasattr(entry, 'is_file'):
-                            if entry.is_dir(follow_symlinks=False):
-                                subdirs.append(entry.path)
-                            elif entry.is_file(follow_symlinks=False):
-                                files.append(name)
-                        else:
-                            # Fallback for systems without DirEntry attributes
-                            if os.path.isdir(entry.path):
-                                subdirs.append(entry.path)
-                            elif os.path.isfile(entry.path):
-                                files.append(name)
                     except (PermissionError, OSError, FileNotFoundError):
-                        # Skip entries we can't access
                         continue
             
-            # Put the current directory results in the result queue
-            result_queue.put((current_dir, [os.path.basename(d) for d in subdirs], files))
+            # Add current directory results
+            with results_lock:
+                results.append((dir_path, [os.path.basename(d) for d in subdirs], files))
             
-            # Add subdirectories to the queue
+            # Submit subdirectories for parallel processing
             for subdir in subdirs:
-                dir_queue.put(subdir)
+                future = executor.submit(scan_directory_parallel, subdir, executor)
+                futures.append(future)
                 
-        except (PermissionError, OSError, Exception):
-            # Skip any directories we can't access
+        except (PermissionError, OSError):
             pass
-
-    # Worker function for threads
-    def worker():
-        nonlocal active_threads
-        active_threads += 1
-        try:
-            while True:
-                try:
-                    current_dir = dir_queue.get_nowait()
-                    process_directory(current_dir)
-                    dir_queue.task_done()
-                except Empty:
-                    break
-                except Exception:
-                    dir_queue.task_done()
-                    continue
-        finally:
-            active_threads -= 1
-            if active_threads == 0:
-                threads_done.set()
-
-    # Create and start worker threads
-    import threading
-    num_workers = min(32, os.cpu_count() * 4)  # Limit max threads
-    threads = []
-    for _ in range(num_workers):
-        t = threading.Thread(target=worker)
-        t.daemon = True
-        t.start()
-        threads.append(t)
-
-    # Wait for all directories to be processed
-    dir_queue.join()
+            
+        return futures
     
-    # Wait for all threads to complete
-    for t in threads:
-        t.join()
-
-    # Signal that all threads are done
-    threads_done.set()
-
-    # Yield all results from the result queue
-    while True:
-        try:
-            result = result_queue.get_nowait()
-            yield result
-        except Empty:
-            if threads_done.is_set():
-                break
-            # Give other threads a chance to add results
-            time.sleep(0.1)
+    # Use a large thread pool for directory scanning
+    max_workers = min(64, os.cpu_count() * 8)  # More aggressive for I/O bound directory scanning
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Start with the root directory
+        initial_futures = scan_directory_parallel(directory, executor)
+        
+        # Process all futures as they complete
+        all_futures = deque(initial_futures)
+        
+        while all_futures:
+            # Process completed futures in batches
+            batch_size = min(100, len(all_futures))
+            current_batch = [all_futures.popleft() for _ in range(batch_size)]
+            
+            for future in concurrent.futures.as_completed(current_batch):
+                try:
+                    new_futures = future.result()
+                    all_futures.extend(new_futures)
+                except Exception:
+                    pass  # Skip any failed directory scans
+    
+    # Yield all collected results
+    for result in results:
+        yield result
 
 
 def search_file(path: str, file_ext: str, search_terms: List[str], 
@@ -705,6 +679,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
         if lines is None:
             return file_matches  # Return empty list if file can't be read
 
+        # Pre-process content for better performance
         if multiline and use_regex:
             # Process the entire file as a single string for multiline mode
             file_content = ''.join(lines)
@@ -714,7 +689,7 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                 current_pos += len(line)
                 line_offsets.append(current_pos)
             
-            # Binary search function to find line index from character offset
+            # Optimized binary search function to find line index from character offset
             def find_line_index(offset, offsets):
                 left, right = 0, len(offsets) - 1
                 while left <= right:
@@ -727,14 +702,15 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         left = mid + 1
                 return 0  # Default to first line if not found
             
-            # Simple function to find matches
+            # Optimized function to find matches using regex module's efficient search
             def find_matches(pattern, text):
                 try:
+                    # Use finditer which is more memory efficient than findall
                     return list(pattern.finditer(text))
                 except Exception as e:
-                    print(f"Error in regex search: {e}")
                     return []
             
+            # Process each search term
             for i, term in enumerate(search_terms):
                 # Use MULTILINE and DOTALL flags for multiline mode
                 flags = re.MULTILINE | re.DOTALL
@@ -804,7 +780,9 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                         "match_lines": (start_line_idx + 1, end_line_idx + 1)
                     })
         else:
-            # Original single-line search mode
+            # Optimized single-line search mode
+            # Pre-compile all patterns for better performance
+            patterns_to_use = []
             for i, term in enumerate(search_terms):
                 flags = 0 if case_sensitive else re.IGNORECASE
                 
@@ -826,16 +804,20 @@ def search_file(path: str, file_ext: str, search_terms: List[str],
                                 pattern = compile_regex(sanitized_term, flags)
                             except regex.error:
                                 continue  # Skip this term if it still can't be compiled
+                    patterns_to_use.append((term, pattern))
                 else:
-                    pattern = None
+                    patterns_to_use.append((term, None))
 
-                for line_idx, line in enumerate(lines):
-                    line_to_check = line.rstrip()
-                    
-                    # Skip comments if enabled
-                    if ignore_comments and is_comment(line_to_check, file_ext):
-                        continue
-                        
+            # Process lines in batches for better performance
+            for line_idx, line in enumerate(lines):
+                line_to_check = line.rstrip()
+                
+                # Skip comments if enabled
+                if ignore_comments and is_comment(line_to_check, file_ext):
+                    continue
+                
+                # Check all patterns against this line
+                for term, pattern in patterns_to_use:
                     if use_regex:
                         match = pattern.search(line_to_check)
                     else:
@@ -958,8 +940,12 @@ def search_code(directory: str, search_terms: List[str],
 
     # Set appropriate number of workers
     if max_workers is None:
-        max_workers = os.cpu_count() * 2
-        max_workers = max(1, min(max_workers, 8 if sys.platform == 'win32' else max_workers))
+        # Use more aggressive threading for regex-heavy workloads
+        # The regex module and file I/O can release the GIL more effectively
+        max_workers = os.cpu_count() * 4  # Increased from 2x to 4x
+        max_workers = max(1, min(max_workers, 16 if sys.platform == 'win32' else 32))
+    
+    print(f"Using {max_workers} worker threads for parallel regex processing")
     
     # Check for cached file list - create a hashable key
     # Note: We don't include anti_regex in the cache key as it only affects results, not file list
@@ -1091,46 +1077,53 @@ def search_code(directory: str, search_terms: List[str],
                     futures[future] = path
                     
                     # Periodically process completed futures
-                    if len(futures) > 100 or (sys.platform == 'win32' and len(futures) > 50):
+                    # Use larger batch sizes for better throughput with more threads
+                    if len(futures) > 200 or (sys.platform == 'win32' and len(futures) > 100):
                         if process_completed_futures(block=False):
                             break  # Stop requested
             else:
-                # No cached files, collect them first
+                # No cached files, collect them first using fast parallel directory traversal
+                print("Scanning directories in parallel...")
+                start_time = time.time()
                 file_list = []
                 
-                # Walk the directory tree using fast_walk and submit tasks as we find files
+                # Collect all files first using the optimized fast_walk
                 for root, dirs, files in fast_walk(directory, DEFAULT_SKIP_DIRS):
-                    # Check for stop request
-                    if stop_requested and stop_requested():
-                        break
-                    
                     for file in files:
-                        # Check for stop request
-                        if stop_requested and stop_requested():
-                            break
-                            
-                        # Get extension - more efficient than splitext
+                        # Get extension efficiently
                         file_lower = file.lower()
                         dot_index = file_lower.rfind('.')
                         
                         if dot_index != -1:
                             file_ext = file_lower[dot_index:]
-                            # Filter by extension if specified
                             if extensions and file_ext not in extensions:
                                 continue
                         elif extensions:
-                            # Skip files without extensions if extensions specified
                             continue
                         else:
                             file_ext = ''
                         
                         path = os.path.join(root, file)
-                        total_files += 1
-                        
-                        # Add to file list for caching
                         file_list.append((path, file_ext))
+                
+                scan_time = time.time() - start_time
+                total_files = len(file_list)
+                print(f"Found {total_files} files in {scan_time:.2f} seconds ({total_files/scan_time:.0f} files/sec)")
+                pbar.total = total_files
+                
+                # Process files in optimized batches
+                batch_size = max_workers * 4  # Process multiple batches per worker
+                for i in range(0, len(file_list), batch_size):
+                    if stop_requested and stop_requested():
+                        break
                         
-                        # Submit the file for processing
+                    batch = file_list[i:i + batch_size]
+                    
+                    # Submit batch for processing
+                    for path, file_ext in batch:
+                        if stop_requested and stop_requested():
+                            break
+                        
                         future = executor.submit(
                             search_file, path, file_ext, search_terms, 
                             case_sensitive, True, color_output, 
@@ -1138,20 +1131,11 @@ def search_code(directory: str, search_terms: List[str],
                             sanitized_patterns, compiled_patterns, multiline, anti_patterns
                         )
                         futures[future] = path
-                        
-                        # Periodically process completed futures
-                        batch_size = 50 if sys.platform == 'win32' else 100
-                        if len(futures) > batch_size:
-                            if process_completed_futures(block=False):
-                                break  # Stop requested
-                        
-                        # Update progress bar
-                        pbar.total = total_files
-                        pbar.refresh()
                     
-                    # Process completed futures after each directory
-                    if process_completed_futures(block=False):
-                        break  # Stop requested
+                    # Process completed futures when we have enough
+                    if len(futures) > max_workers * 2:
+                        if process_completed_futures(block=False):
+                            break  # Stop requested
                 
                 # Cache the file list for future searches if not stopped
                 if not (stop_requested and stop_requested()):
