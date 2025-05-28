@@ -24,7 +24,7 @@ _file_cache = {}
 
 # Cache for file contents to avoid re-reading files
 _content_cache = {}
-_content_cache_stats = {"hits": 0, "misses": 0, "max_size": 1000}
+_content_cache_stats = {"hits": 0, "misses": 0, "max_size": 50000}
 
 # Maps file extensions to programming languages
 LANGUAGE_MAP = {
@@ -1569,7 +1569,7 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, help="Number of parallel workers")
     parser.add_argument("--provider", choices=["anthropic", "openai", "azure"], default="anthropic", help="AI provider to use")
     parser.add_argument("--single-line", action="store_true", help="Disable multi-line regex mode (uses single-line mode)")
-    parser.add_argument("--cache-size", type=int, default=1000, help="Maximum number of files to cache in memory (default: 1000)")
+    parser.add_argument("--cache-size", type=int, default=50000, help="Maximum number of files to cache in memory (default: 50000)")
     parser.add_argument("--clear-cache", action="store_true", help="Clear both file list and content caches before searching")
     parser.add_argument("--cache-stats", action="store_true", help="Show cache statistics after search")
     args = parser.parse_args()
